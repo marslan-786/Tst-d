@@ -6,9 +6,11 @@ RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Copy go.mod and go.sum first for dependency caching
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy ONLY go.mod first — go.sum will be generated
+COPY go.mod ./
+
+# Download dependencies AND generate go.sum
+RUN go mod download && go mod tidy
 
 # Copy entire source (including web/ folder for embed)
 COPY . .
