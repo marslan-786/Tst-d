@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// ProxyConfig holds Webshare rotating proxy credentials.
 type ProxyConfig struct {
 	Enabled  bool
 	Host     string
@@ -15,8 +14,6 @@ type ProxyConfig struct {
 	Password string
 }
 
-// DefaultConfig returns the hardcoded configuration.
-// Overridable via environment variables.
 func DefaultConfig() *Config {
 	proxy := &ProxyConfig{
 		Enabled:  true,
@@ -26,7 +23,6 @@ func DefaultConfig() *Config {
 		Password: "582ygxexguhx",
 	}
 
-	// Allow override from environment
 	if v := os.Getenv("PROXY_ENABLED"); v == "false" || v == "0" {
 		proxy.Enabled = false
 	}
@@ -53,22 +49,20 @@ func DefaultConfig() *Config {
 	}
 
 	return &Config{
-		Port:          port,
+		Port:            port,
 		DefaultDuration: 300 * time.Second,
 		Proxy:           proxy,
 		MaxConcurrency:  3000,
-		// Default per-layer workers (sum <= MaxConcurrency)
 		DefaultLayers: LayerWorkers{
-			L1: 800,  // Chunked transfer abuse
-			L2: 1000, // Recursive params
-			L3: 600,  // Cache bypass
-			L4: 400,  // Connection pool exhaustion
-			L5: 200,  // Parser stress (headers)
+			L1: 300,
+			L2: 200,
+			L3: 200,
+			L4: 2000,
+			L5: 100,
 		},
 	}
 }
 
-// Config holds all runtime configuration.
 type Config struct {
 	Port            int
 	DefaultDuration time.Duration
@@ -77,16 +71,14 @@ type Config struct {
 	DefaultLayers   LayerWorkers
 }
 
-// LayerWorkers defines worker counts per attack layer.
 type LayerWorkers struct {
-	L1 int // Chunked transfer encoding
-	L2 int // Recursive parameter requests
-	L3 int // Cache busting + unique URLs
-	L4 int // Keep-alive connection pool
-	L5 int // Oversized header attacks
+	L1 int
+	L2 int
+	L3 int
+	L4 int
+	L5 int
 }
 
-// Total returns the sum of all layer workers.
 func (lw LayerWorkers) Total() int {
 	return lw.L1 + lw.L2 + lw.L3 + lw.L4 + lw.L5
 }
