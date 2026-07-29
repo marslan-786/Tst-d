@@ -4,17 +4,16 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
-    "sync"
+	"sync"
 	"time"
 )
 
 // Server holds all dependencies for HTTP handlers.
 type Server struct {
-	cfg      *Config
-	proxyMgr *ProxyManager
-	hub      *WebSocketHub
-	attacks  *AttackRegistry
+	cfg       *Config
+	proxyMgr  *ProxyManager
+	hub       *WebSocketHub
+	attacks   *AttackRegistry
 	indexHTML []byte
 }
 
@@ -87,12 +86,31 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply default layer configs if zero
-	layers := req.Layers
-	if layers.L1 == 0 { layers.L1 = s.cfg.DefaultLayers.L1 }
-	if layers.L2 == 0 { layers.L2 = s.cfg.DefaultLayers.L2 }
-	if layers.L3 == 0 { layers.L3 = s.cfg.DefaultLayers.L3 }
-	if layers.L4 == 0 { layers.L4 = s.cfg.DefaultLayers.L4 }
-	if layers.L5 == 0 { layers.L5 = s.cfg.DefaultLayers.L5 }
+	layersConfig := req.Layers
+	if layersConfig.L1 == 0 {
+		layersConfig.L1 = s.cfg.DefaultLayers.L1
+	}
+	if layersConfig.L2 == 0 {
+		layersConfig.L2 = s.cfg.DefaultLayers.L2
+	}
+	if layersConfig.L3 == 0 {
+		layersConfig.L3 = s.cfg.DefaultLayers.L3
+	}
+	if layersConfig.L4 == 0 {
+		layersConfig.L4 = s.cfg.DefaultLayers.L4
+	}
+	if layersConfig.L5 == 0 {
+		layersConfig.L5 = s.cfg.DefaultLayers.L5
+	}
+
+	// Convert LayerConfig to LayerWorkers
+	workers := LayerWorkers{
+		L1: layersConfig.L1,
+		L2: layersConfig.L2,
+		L3: layersConfig.L3,
+		L4: layersConfig.L4,
+		L5: layersConfig.L5,
+	}
 
 	duration := time.Duration(req.Duration) * time.Second
 	if duration <= 0 {
@@ -100,13 +118,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create and start orchestrator
-	orch := NewOrchestrator(targetURL, layers, duration, s.proxyMgr, s.hub, s.cfg)
+	orch := NewOrchestrator(targetURL, workers, duration, s.proxyMgr, s.hub, s.cfg)
 	s.attacks.Add(orch)
 
 	go func() {
 		orch.Start()
 		s.attacks.Remove(orch.ID())
-		// Notify frontend that attack stopped
 		s.hub.BroadcastLog("info", "Attack finished: "+orch.ID())
 	}()
 
@@ -183,7 +200,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] Upgrade error: %v", err)
@@ -198,7 +214,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[ws] Client connected for attack %s", attackID)
 }
 
-// corsMiddleware adds CORS headers for development.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
