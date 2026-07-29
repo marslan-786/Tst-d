@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Server holds all dependencies for HTTP handlers.
 type Server struct {
 	cfg       *Config
 	proxyMgr  *ProxyManager
@@ -17,7 +16,6 @@ type Server struct {
 	indexHTML []byte
 }
 
-// NewServer creates a new Server instance.
 func NewServer(cfg *Config, pm *ProxyManager, hub *WebSocketHub, ar *AttackRegistry) *Server {
 	return &Server{
 		cfg:      cfg,
@@ -27,27 +25,21 @@ func NewServer(cfg *Config, pm *ProxyManager, hub *WebSocketHub, ar *AttackRegis
 	}
 }
 
-// SetIndexHTML sets the embedded index.html content.
 func (s *Server) SetIndexHTML(html []byte) {
 	s.indexHTML = html
 }
 
-// Router returns the configured http.Handler.
 func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 
-	// Frontend
 	mux.HandleFunc("/", s.handleIndex)
 
-	// API
 	mux.HandleFunc("/api/attack/start", s.handleStart)
 	mux.HandleFunc("/api/attack/stop", s.handleStop)
 	mux.HandleFunc("/api/attack/status", s.handleStatus)
 
-	// WebSocket
 	mux.HandleFunc("/ws/console", s.handleWebSocket)
 
-	// CORS middleware wrapper
 	return corsMiddleware(mux)
 }
 
@@ -78,14 +70,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate target
 	targetURL, err := ParseTarget(req.Target)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: err.Error(), Success: false})
 		return
 	}
 
-	// Apply default layer configs if zero
 	layersConfig := req.Layers
 	if layersConfig.L1 == 0 {
 		layersConfig.L1 = s.cfg.DefaultLayers.L1
@@ -103,7 +93,6 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		layersConfig.L5 = s.cfg.DefaultLayers.L5
 	}
 
-	// Convert LayerConfig to LayerWorkers
 	workers := LayerWorkers{
 		L1: layersConfig.L1,
 		L2: layersConfig.L2,
@@ -117,8 +106,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		duration = s.cfg.DefaultDuration
 	}
 
-	// Create and start orchestrator
-	orch := NewOrchestrator(targetURL, workers, duration, s.proxyMgr, s.hub, s.cfg)
+	orch := NewOrchestrator(targetURL, workers, duration, s.proxyMgr, s.hub, s.cfg, req.ProxyEnabled)
 	s.attacks.Add(orch)
 
 	go func() {
@@ -127,7 +115,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		s.hub.BroadcastLog("info", "Attack finished: "+orch.ID())
 	}()
 
-	log.Printf("[api] Attack started: %s -> %s (duration: %v)", orch.ID(), targetURL.String(), duration)
+	log.Printf("[api] Attack started: %s -> %s (duration: %v, proxy: %v)", orch.ID(), targetURL.String(), duration, req.ProxyEnabled)
 	writeJSON(w, http.StatusOK, AttackResponse{AttackID: orch.ID(), Success: true})
 }
 
@@ -235,7 +223,6 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-// AttackRegistry holds all active attacks (thread-safe).
 type AttackRegistry struct {
 	attacks map[string]*Orchestrator
 	mu      sync.RWMutex
