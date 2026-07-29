@@ -102,11 +102,11 @@ func (o *Orchestrator) Start() {
 	o.wg.Add(1)
 	go o.launchLayer("L1 - Chunked Abuse", o.layers.L1, layer1Chunked, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L2 - Captcha Flood", o.layers.L2, layer2Recursive, timer)
+	go o.launchLayer("L2 - Session Exhaust", o.layers.L2, layer2Recursive, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L3 - Fake Login POST", o.layers.L3, layer3CacheBypass, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L4 - UDP Flood", o.layers.L4, udpNetworkFlood, timer)
+	go o.launchLayer("L4 - Slow TCP Exhaust", o.layers.L4, layer4PoolExhaust, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L5 - Parser Stress", o.layers.L5, layer5ParserStress, timer)
 
