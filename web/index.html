@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Silent Stress Engine</title>
+    <style>
+        /* ========== DARK TERMINAL THEME ========== */
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+            --green: #3fb950;
+            --red: #f85149;
+            --yellow: #d2991d;
+            --cyan: #58a6ff;
+            --purple: #a371f7;
+            --orange: #db6d28;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 20px;
+        }
+
+        header .logo {
+            font-size: 28px;
+        }
+        header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: var(--green);
+        }
+        header .badge {
+            background: var(--purple);
+            color: #fff;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-left: auto;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        input[type="text"], input[type="number"] {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 14px;
+            width: 100%;
+        }
+        input[type="text"]:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: var(--cyan);
+        }
+
+        button {
+            background: var(--green);
+            color: #0d1117;
+            border: none;
+            padding: 8px 20px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+        }
+        button.danger {
+            background: var(--red);
+            color: #fff;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .settings-grid label {
+            font-size: 12px;
+            color: var(--text-muted);
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .stats-bar {
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+        .stat-item {
+            background: var(--bg);
+            padding: 8px 14px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+        .stat-item span {
+            color: var(--green);
+            font-weight: 600;
+        }
+        .stat-item .label {
+            color: var(--text-muted);
+            font-weight: normal;
+        }
+
+        #console {
+            background: #0d1117;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            height: 400px;
+            overflow-y: auto;
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.6;
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+        }
+        #console .log { margin-bottom: 2px; }
+        .log.info { color: var(--cyan); }
+        .log.success { color: var(--green); }
+        .log.error { color: var(--red); }
+        .log.warn { color: var(--yellow); }
+        .log.debug { color: var(--text-muted); }
+
+        /* scrollbar */
+        #console::-webkit-scrollbar { width: 6px; }
+        #console::-webkit-scrollbar-track { background: var(--bg); }
+        #console::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .flex-1 { flex: 1; }
+        .mt-2 { margin-top: 8px; }
+        .mt-4 { margin-top: 16px; }
+        .gap-2 { gap: 8px; }
+        .text-muted { color: var(--text-muted); font-size: 12px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <span class="logo">🛡️</span>
+    <h1>Silent Stress Engine</h1>
+    <span class="badge">Silent AI</span>
+</header>
+
+<!-- Target input -->
+<div class="card">
+    <div class="row">
+        <input type="text" id="targetUrl" placeholder="https://target-website.com" style="flex:1">
+        <button id="startBtn" onclick="startAttack()">▶ START</button>
+        <button id="stopBtn" class="danger" onclick="stopAttack()" disabled>⏹ STOP</button>
+    </div>
+    <div id="statusText" class="text-muted mt-2">Ready. Enter target and start.</div>
+</div>
+
+<!-- Settings (collapsible) -->
+<details class="card" id="settingsPanel">
+    <summary style="cursor:pointer; font-weight:600;">⚙️ Advanced Settings</summary>
+    <div class="settings-grid mt-4">
+        <div><label>Layer 1 (Chunked)</label><input type="number" id="l1" value="800" min="1"></div>
+        <div><label>Layer 2 (Recursive)</label><input type="number" id="l2" value="1000" min="1"></div>
+        <div><label>Layer 3 (Cache Bypass)</label><input type="number" id="l3" value="600" min="1"></div>
+        <div><label>Layer 4 (Pool Exhaust)</label><input type="number" id="l4" value="400" min="1"></div>
+        <div><label>Layer 5 (Parser Stress)</label><input type="number" id="l5" value="200" min="1"></div>
+        <div><label>Duration (seconds)</label><input type="number" id="duration" value="300" min="1"></div>
+    </div>
+</details>
+
+<!-- Live Stats -->
+<div class="card">
+    <div class="stats-bar" id="statsBar">
+        <div class="stat-item"><span class="label">RPS:</span> <span id="rps">0</span></div>
+        <div class="stat-item"><span class="label">Total:</span> <span id="total">0</span></div>
+        <div class="stat-item"><span class="label">Success:</span> <span id="success">0</span></div>
+        <div class="stat-item"><span class="label">Fail:</span> <span id="fail">0</span></div>
+        <div class="stat-item"><span class="label">Active:</span> <span id="active">0</span></div>
+        <div class="stat-item"><span class="label">Uptime:</span> <span id="uptime">00:00</span></div>
+    </div>
+</div>
+
+<!-- Console -->
+<div class="card flex-1" style="display:flex; flex-direction:column;">
+    <div style="font-weight:600; margin-bottom:8px;">📟 Live Console</div>
+    <div id="console"></div>
+</div>
+
+<script>
+    // ==================== WEBSOCKET LOGIC ====================
+    let ws = null;
+    let currentAttackId = localStorage.getItem('current_attack') || null;
+    let reconnectTimer = null;
+
+    const consoleEl = document.getElementById('console');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusText = document.getElementById('statusText');
+
+    function log(message, type = 'info') {
+        const time = new Date().toLocaleTimeString();
+        const div = document.createElement('div');
+        div.className = `log ${type}`;
+        div.textContent = `[${time}] ${message}`;
+        consoleEl.appendChild(div);
+        consoleEl.scrollTop = consoleEl.scrollHeight;
+        // keep max 1000 lines
+        while (consoleEl.children.length > 1000) {
+            consoleEl.removeChild(consoleEl.firstChild);
+        }
+    }
+
+    function connectWebSocket() {
+        if (!currentAttackId) return;
+        const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsUrl = `${protocol}://${location.host}/ws/console?attack_id=${currentAttackId}`;
+
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+            log('Connected to attack stream', 'success');
+            statusText.textContent = 'Connected. Receiving live data...';
+        };
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'stats') {
+                updateStats(data);
+            } else if (data.type === 'log') {
+                log(data.message, data.level || 'info');
+            } else if (data.type === 'stopped') {
+                log('Attack finished or stopped.', 'warn');
+                resetUI();
+            }
+        };
+        ws.onerror = () => log('WebSocket error', 'error');
+        ws.onclose = () => {
+            log('WebSocket disconnected', 'warn');
+            statusText.textContent = 'Connection lost. Reconnecting...';
+            ws = null;
+            reconnectTimer = setTimeout(connectWebSocket, 3000);
+        };
+    }
+
+    function updateStats(data) {
+        document.getElementById('rps').textContent = data.rps || 0;
+        document.getElementById('total').textContent = data.total || 0;
+        document.getElementById('success').textContent = data.success || 0;
+        document.getElementById('fail').textContent = data.fail || 0;
+        document.getElementById('active').textContent = data.active || 0;
+        const secs = Math.floor((data.uptime || 0) / 1000);
+        const m = String(Math.floor(secs / 60)).padStart(2, '0');
+        const s = String(secs % 60).padStart(2, '0');
+        document.getElementById('uptime').textContent = `${m}:${s}`;
+    }
+
+    async function startAttack() {
+        const target = document.getElementById('targetUrl').value.trim();
+        if (!target) {
+            log('Please enter a target URL', 'error');
+            return;
+        }
+        const payload = {
+            target: target,
+            layers: {
+                l1: parseInt(document.getElementById('l1').value),
+                l2: parseInt(document.getElementById('l2').value),
+                l3: parseInt(document.getElementById('l3').value),
+                l4: parseInt(document.getElementById('l4').value),
+                l5: parseInt(document.getElementById('l5').value),
+            },
+            duration: parseInt(document.getElementById('duration').value),
+        };
+
+        try {
+            const resp = await fetch('/api/attack/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const result = await resp.json();
+            if (result.error) {
+                log(result.error, 'error');
+                return;
+            }
+            currentAttackId = result.attack_id;
+            localStorage.setItem('current_attack', currentAttackId);
+            log(`Attack started! ID: ${currentAttackId}`, 'success');
+            statusText.textContent = `Attack running: ${currentAttackId}`;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            connectWebSocket();
+        } catch (e) {
+            log('Failed to start attack: ' + e.message, 'error');
+        }
+    }
+
+    async function stopAttack() {
+        if (!currentAttackId) return;
+        try {
+            await fetch('/api/attack/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ attack_id: currentAttackId }),
+            });
+            log('Stop command sent', 'warn');
+        } catch (e) {
+            log('Stop failed: ' + e.message, 'error');
+        }
+    }
+
+    function resetUI() {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        localStorage.removeItem('current_attack');
+        currentAttackId = null;
+        if (ws) { ws.close(); ws = null; }
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        statusText.textContent = 'Ready.';
+    }
+
+    // On page load, check for existing attack
+    (async function init() {
+        if (currentAttackId) {
+            try {
+                const resp = await fetch(`/api/attack/status?attack_id=${currentAttackId}`);
+                const status = await resp.json();
+                if (status && status.active) {
+                    log('Resuming live stream...', 'info');
+                    statusText.textContent = 'Reconnected to running attack.';
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                    connectWebSocket();
+                } else {
+                    resetUI();
+                }
+            } catch (e) {
+                resetUI();
+            }
+        }
+    })();
+</script>
+
+</body>
+</html>
