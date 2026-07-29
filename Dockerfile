@@ -1,34 +1,29 @@
 # Stage 1: Build the Go binary
 FROM golang:1.23-alpine AS builder
 
-# Install git for module downloads, ca-certificates for HTTPS
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Copy ONLY go.mod first — go.sum will be generated
+# Step 1: Copy ONLY go.mod, download deps, generate go.sum
 COPY go.mod ./
+RUN go mod download
 
-# Download dependencies AND generate go.sum
-RUN go mod download && go mod tidy
-
-# Copy entire source (including web/ folder for embed)
+# Step 2: Now copy EVERYTHING else (source + web/)
 COPY . .
 
-# Build a static binary with the web assets embedded
+# Step 3: Run tidy to ensure go.sum is complete (won't delete it now
+#         because we already have all source files present)
+RUN go mod tidy
+
+# Step 4: Build static binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o /silent-stress .
 
-# Stage 2: Minimal runtime image
+# Stage 2: Minimal runtime
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates tzdata
-
-# Copy binary from builder
 COPY --from=builder /silent-stress /silent-stress
-
-# Expose the port Railway will map
 EXPOSE 8080
-
-# Run the binary
 ENTRYPOINT ["/silent-stress"]
