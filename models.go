@@ -45,7 +45,7 @@ type Stats struct {
 	BytesSent       atomic.Int64
 	BytesRecv       atomic.Int64
 	StartTime       time.Time
-	Layers          *LayerStats
+	Layers          []*LayerStats // ✅ یہاں *LayerStats کی جگہ []*LayerStats کر دیا ہے (Slice)
 }
 
 // LayerStats holds per-layer metrics.
@@ -93,11 +93,19 @@ type WSMessage struct {
 
 // NewStats initializes a Stats object with per-layer tracking.
 func NewStats() *Stats {
+	layerNames := []string{
+		"Chunked Abuse", 
+		"Recursive Params", 
+		"Cache Bypass",
+		"Connection Pool", 
+		"Parser Stress",
+	}
+
 	s := &Stats{
 		StartTime: time.Now(),
+		Layers:    make([]*LayerStats, len(layerNames)), // ✅ Slice کو initialize کر دیا ہے
 	}
-	layerNames := []string{"Chunked Abuse", "Recursive Params", "Cache Bypass",
-		"Connection Pool", "Parser Stress"}
+
 	for i, name := range layerNames {
 		s.Layers[i] = &LayerStats{Name: name}
 	}
@@ -114,10 +122,12 @@ func (s *Stats) Reset() {
 	s.BytesRecv.Store(0)
 	s.StartTime = time.Now()
 	for _, l := range s.Layers {
-		l.Requests.Store(0)
-		l.Success.Store(0)
-		l.Fail.Store(0)
-		l.ActiveWorkers.Store(0)
+		if l != nil {
+			l.Requests.Store(0)
+			l.Success.Store(0)
+			l.Fail.Store(0)
+			l.ActiveWorkers.Store(0)
+		}
 	}
 }
 
@@ -129,16 +139,20 @@ func (s *Stats) Snapshot() StatsSnapshot {
 	if elapsed > 0 {
 		rps = total * 1000 / elapsed
 	}
-	layers := make([]LayerSnapshot, 5)
+	
+	layers := make([]LayerSnapshot, len(s.Layers))
 	for i, l := range s.Layers {
-		layers[i] = LayerSnapshot{
-			Name:    l.Name,
-			Req:     l.Requests.Load(),
-			Success: l.Success.Load(),
-			Fail:    l.Fail.Load(),
-			Active:  l.ActiveWorkers.Load(),
+		if l != nil {
+			layers[i] = LayerSnapshot{
+				Name:    l.Name,
+				Req:     l.Requests.Load(),
+				Success: l.Success.Load(),
+				Fail:    l.Fail.Load(),
+				Active:  l.ActiveWorkers.Load(),
+			}
 		}
 	}
+	
 	return StatsSnapshot{
 		Type:    "stats",
 		RPS:     rps,
