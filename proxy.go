@@ -12,31 +12,27 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// ProxyManager creates HTTP clients that route through Webshare rotating proxy.
-// Every new connection gets a different exit IP automatically.
 type ProxyManager struct {
 	config    *ProxyConfig
 	auth      *proxy.Auth
 	dialer    proxy.Dialer
 	transport *http.Transport
+	enabled   bool
 }
 
-// NewProxyManager initializes the proxy manager.
 func NewProxyManager(cfg *ProxyConfig) (*ProxyManager, error) {
 	if !cfg.Enabled {
 		log.Println("[proxy] Proxy disabled — using direct connections")
-		return &ProxyManager{config: cfg}, nil
+		return &ProxyManager{config: cfg, enabled: false}, nil
 	}
 
 	proxyAddr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
-	// SOCKS5 authentication
 	auth := proxy.Auth{
 		User:     cfg.Username,
 		Password: cfg.Password,
 	}
 
-	// Create SOCKS5 dialer
 	baseDialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -47,18 +43,17 @@ func NewProxyManager(cfg *ProxyConfig) (*ProxyManager, error) {
 		return nil, fmt.Errorf("proxy: failed to create SOCKS5 dialer: %w", err)
 	}
 
-	// Build HTTP transport that uses the SOCKS5 dialer
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return socksDialer.Dial(network, addr)
 		},
-		MaxIdleConns:          0,    // no limit
-		MaxIdleConnsPerHost:   0,    // no limit — we need every connection
-		MaxConnsPerHost:       0,    // no limit
+		MaxIdleConns:          0,
+		MaxIdleConnsPerHost:   0,
+		MaxConnsPerHost:       0,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		DisableKeepAlives:     false, // keep alive for connection reuse
+		DisableKeepAlives:     false,
 	}
 
 	log.Printf("[proxy] Webshare SOCKS5 proxy configured: %s (user: %s)", proxyAddr, cfg.Username)
@@ -68,13 +63,12 @@ func NewProxyManager(cfg *ProxyConfig) (*ProxyManager, error) {
 		auth:      &auth,
 		dialer:    socksDialer,
 		transport: transport,
+		enabled:   true,
 	}, nil
 }
 
-// NewClient returns an http.Client that routes through the rotating proxy.
-// Call this once per connection to ensure IP rotation.
 func (pm *ProxyManager) NewClient() *http.Client {
-	if !pm.config.Enabled || pm.transport == nil {
+	if !pm.enabled || pm.transport == nil {
 		return &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -84,10 +78,8 @@ func (pm *ProxyManager) NewClient() *http.Client {
 		}
 	}
 
-	// Create a fresh transport clone to avoid connection reuse across IPs
-	// This ensures Webshare assigns a new exit IP for each new connection
 	transport := pm.transport.Clone()
-	transport.DisableKeepAlives = false // allow keep-alive per-connection
+	transport.DisableKeepAlives = false
 
 	return &http.Client{
 		Transport: transport,
@@ -95,19 +87,16 @@ func (pm *ProxyManager) NewClient() *http.Client {
 	}
 }
 
-// NewClientWithTimeout returns a client with a custom timeout.
 func (pm *ProxyManager) NewClientWithTimeout(timeout time.Duration) *http.Client {
 	client := pm.NewClient()
 	client.Timeout = timeout
 	return client
 }
 
-// ParseTarget validates and normalizes the target URL.
 func ParseTarget(raw string) (*url.URL, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("target URL is empty")
 	}
-	// Add scheme if missing
 	if !hasScheme(raw) {
 		raw = "http://" + raw
 	}
