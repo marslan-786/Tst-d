@@ -59,13 +59,13 @@ type LayerStats struct {
 
 // StatsSnapshot is sent to the frontend via WebSocket every 500ms.
 type StatsSnapshot struct {
-	Type    string `json:"type"` // "stats"
-	RPS     int64  `json:"rps"`
-	Total   int64  `json:"total"`
-	Success int64  `json:"success"`
-	Fail    int64  `json:"fail"`
-	Active  int32  `json:"active"`
-	Uptime  int64  `json:"uptime"` // milliseconds
+	Type    string          `json:"type"` // "stats"
+	RPS     int64           `json:"rps"`
+	Total   int64           `json:"total"`
+	Success int64           `json:"success"`
+	Fail    int64           `json:"fail"`
+	Active  int32           `json:"active"`
+	Uptime  int64           `json:"uptime"` // milliseconds
 	Layers  []LayerSnapshot `json:"layers,omitempty"`
 }
 
@@ -80,7 +80,7 @@ type LayerSnapshot struct {
 
 // LogEntry is sent to the frontend console via WebSocket.
 type LogEntry struct {
-	Type    string `json:"type"` // "log"
+	Type    string `json:"type"`  // "log"
 	Level   string `json:"level"` // info, success, error, warn
 	Message string `json:"message"`
 }
