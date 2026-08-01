@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -194,53 +193,5 @@ func (s *Stats) Snapshot() StatsSnapshot {
 		Active:  s.ActiveWorkers.Load(),
 		Uptime:  elapsed,
 		Layers:  layers,
-	}
-}
-
-// ==================== ATTACK REGISTRY ====================
-type AttackRegistry struct {
-	attacks map[string]*AttackInfo
-	mu      sync.RWMutex
-}
-
-func NewAttackRegistry() *AttackRegistry {
-	return &AttackRegistry{attacks: make(map[string]*AttackInfo)}
-}
-
-func (ar *AttackRegistry) Store(id string, info *AttackInfo) {
-	ar.mu.Lock()
-	ar.attacks[id] = info
-	ar.mu.Unlock()
-}
-
-func (ar *AttackRegistry) Load(id string) *AttackInfo {
-	ar.mu.RLock()
-	defer ar.mu.RUnlock()
-	return ar.attacks[id]
-}
-
-func (ar *AttackRegistry) Delete(id string) {
-	ar.mu.Lock()
-	delete(ar.attacks, id)
-	ar.mu.Unlock()
-}
-
-func (ar *AttackRegistry) List() []*AttackInfo {
-	ar.mu.RLock()
-	defer ar.mu.RUnlock()
-	list := make([]*AttackInfo, 0, len(ar.attacks))
-	for _, v := range ar.attacks {
-		list = append(list, v)
-	}
-	return list
-}
-
-func (ar *AttackRegistry) StopAll() {
-	ar.mu.RLock()
-	defer ar.mu.RUnlock()
-	for _, info := range ar.attacks {
-		if info.Orchestrator != nil {
-			info.Orchestrator.Stop()
-		}
 	}
 }
