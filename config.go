@@ -50,15 +50,15 @@ func DefaultConfig() *Config {
 
 	return &Config{
 		Port:            port,
-		DefaultDuration: 300 * time.Second,
+		DefaultDuration: 0, // unlimited by default
 		Proxy:           proxy,
-		MaxConcurrency:  3000,
+		MaxConcurrency:  40000,
 		DefaultLayers: LayerWorkers{
-			L1: 300,
-			L2: 200,
-			L3: 200,
-			L4: 2000,
-			L5: 100,
+			L1: 3000,
+			L2: 5000,
+			L3: 4000,
+			L4: 26000,
+			L5: 2000,
 		},
 	}
 }
