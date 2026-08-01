@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,11 +34,13 @@ func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", s.handleIndex)
-
+	mux.HandleFunc("/api/attack/create", s.handleCreate)
 	mux.HandleFunc("/api/attack/start", s.handleStart)
 	mux.HandleFunc("/api/attack/stop", s.handleStop)
 	mux.HandleFunc("/api/attack/status", s.handleStatus)
-
+	mux.HandleFunc("/api/attack/list", s.handleList)
+	mux.HandleFunc("/api/attack/delete", s.handleDelete)
+	mux.HandleFunc("/api/attack/redeploy", s.handleRedeploy)
 	mux.HandleFunc("/ws/console", s.handleWebSocket)
 
 	return corsMiddleware(mux)
@@ -53,52 +56,121 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Write(s.indexHTML)
 }
 
+// ==================== CREATE ====================
+func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
+		return
+	}
+
+	var req CreateAttackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid JSON body", "success": false})
+		return
+	}
+
+	if req.URL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "target URL is required", "success": false})
+		return
+	}
+
+	// Validate and parse target
+	targetURL, err := ParseTarget(req.URL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error(), "success": false})
+		return
+	}
+
+	// Generate smart paths
+	smartPaths := DetectSmartPaths(targetURL.String())
+
+	// Create attack info
+	attackID := generateID()
+	attackInfo := &AttackInfo{
+		ID:            attackID,
+		URL:           targetURL.String(),
+		TargetPaths:   smartPaths,
+		CreatedAt:     time.Now(),
+		Status:        "stopped",
+		LastResponses: make([]ResponseEntry, 0, 5),
+	}
+
+	s.attacks.Store(attackID, attackInfo)
+	log.Printf("[api] Attack created: %s -> %s", attackID, targetURL.String())
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":   true,
+		"attack_id": attackID,
+		"url":       targetURL.String(),
+		"paths":     smartPaths,
+	})
+}
+
+// ==================== START ====================
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, AttackResponse{Error: "method not allowed", Success: false})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
 		return
 	}
 
-	var req AttackRequest
+	var req struct {
+		AttackID     string      `json:"attack_id"`
+		Layers       LayerConfig `json:"layers,omitempty"`
+		Duration     int         `json:"duration,omitempty"`
+		ProxyEnabled bool        `json:"proxy_enabled"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: "invalid JSON body", Success: false})
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid JSON body", "success": false})
 		return
 	}
 
-	if req.Target == "" {
-		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: "target URL is required", Success: false})
+	if req.AttackID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "attack_id is required", "success": false})
 		return
 	}
 
-	targetURL, err := ParseTarget(req.Target)
+	info := s.attacks.Load(req.AttackID)
+	if info == nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "attack not found", "success": false})
+		return
+	}
+
+	if info.Status == "active" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "attack already running", "success": false})
+		return
+	}
+
+	// Parse target
+	targetURL, err := ParseTarget(info.URL)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: err.Error(), Success: false})
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid stored URL: " + err.Error(), "success": false})
 		return
 	}
 
-	layersConfig := req.Layers
-	if layersConfig.L1 == 0 {
-		layersConfig.L1 = s.cfg.DefaultLayers.L1
+	// Apply default layers if zero
+	layers := req.Layers
+	if layers.L1 == 0 {
+		layers.L1 = s.cfg.DefaultLayers.L1
 	}
-	if layersConfig.L2 == 0 {
-		layersConfig.L2 = s.cfg.DefaultLayers.L2
+	if layers.L2 == 0 {
+		layers.L2 = s.cfg.DefaultLayers.L2
 	}
-	if layersConfig.L3 == 0 {
-		layersConfig.L3 = s.cfg.DefaultLayers.L3
+	if layers.L3 == 0 {
+		layers.L3 = s.cfg.DefaultLayers.L3
 	}
-	if layersConfig.L4 == 0 {
-		layersConfig.L4 = s.cfg.DefaultLayers.L4
+	if layers.L4 == 0 {
+		layers.L4 = s.cfg.DefaultLayers.L4
 	}
-	if layersConfig.L5 == 0 {
-		layersConfig.L5 = s.cfg.DefaultLayers.L5
+	if layers.L5 == 0 {
+		layers.L5 = s.cfg.DefaultLayers.L5
 	}
 
 	workers := LayerWorkers{
-		L1: layersConfig.L1,
-		L2: layersConfig.L2,
-		L3: layersConfig.L3,
-		L4: layersConfig.L4,
-		L5: layersConfig.L5,
+		L1: layers.L1,
+		L2: layers.L2,
+		L3: layers.L3,
+		L4: layers.L4,
+		L5: layers.L5,
 	}
 
 	duration := time.Duration(req.Duration) * time.Second
@@ -106,22 +178,31 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		duration = s.cfg.DefaultDuration
 	}
 
-	orch := NewOrchestrator(targetURL, workers, duration, s.proxyMgr, s.hub, s.cfg, req.ProxyEnabled)
-	s.attacks.Add(orch)
+	// Create orchestrator with smart paths
+	orch := NewOrchestrator(targetURL, workers, duration, s.proxyMgr, s.hub, s.cfg, req.ProxyEnabled, info.TargetPaths)
+	info.Orchestrator = orch
+	info.Status = "active"
+	s.attacks.Store(req.AttackID, info)
 
 	go func() {
 		orch.Start()
-		s.attacks.Remove(orch.ID())
-		s.hub.BroadcastLog("info", "Attack finished: "+orch.ID())
+		info := s.attacks.Load(req.AttackID)
+		if info != nil {
+			info.Status = "stopped"
+			info.Orchestrator = nil
+			s.attacks.Store(req.AttackID, info)
+		}
+		s.hub.BroadcastLog("info", "Attack finished: "+req.AttackID)
 	}()
 
-	log.Printf("[api] Attack started: %s -> %s (duration: %v, proxy: %v)", orch.ID(), targetURL.String(), duration, req.ProxyEnabled)
-	writeJSON(w, http.StatusOK, AttackResponse{AttackID: orch.ID(), Success: true})
+	log.Printf("[api] Attack started: %s -> %s (workers: %d)", req.AttackID, targetURL.String(), workers.Total())
+	writeJSON(w, http.StatusOK, AttackResponse{AttackID: req.AttackID, Success: true})
 }
 
+// ==================== STOP ====================
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, AttackResponse{Error: "method not allowed", Success: false})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
 		return
 	}
 
@@ -129,52 +210,177 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		AttackID string `json:"attack_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: "invalid JSON body", Success: false})
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid JSON body", "success": false})
 		return
 	}
 
 	if req.AttackID == "" {
-		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: "attack_id is required", Success: false})
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "attack_id is required", "success": false})
 		return
 	}
 
-	orch := s.attacks.Get(req.AttackID)
-	if orch == nil {
-		writeJSON(w, http.StatusNotFound, AttackResponse{Error: "attack not found", Success: false})
+	info := s.attacks.Load(req.AttackID)
+	if info == nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "attack not found", "success": false})
 		return
 	}
 
-	orch.Stop()
+	if info.Orchestrator != nil {
+		info.Orchestrator.Stop()
+	}
+	info.Status = "stopped"
+	s.attacks.Store(req.AttackID, info)
+
 	log.Printf("[api] Attack stopped: %s", req.AttackID)
 	writeJSON(w, http.StatusOK, AttackResponse{AttackID: req.AttackID, Success: true})
 }
 
+// ==================== STATUS ====================
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, AttackResponse{Error: "method not allowed", Success: false})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
 		return
 	}
 
 	attackID := r.URL.Query().Get("attack_id")
 	if attackID == "" {
-		writeJSON(w, http.StatusBadRequest, AttackResponse{Error: "attack_id query param required", Success: false})
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "attack_id query param required", "success": false})
 		return
 	}
 
-	orch := s.attacks.Get(attackID)
-	if orch == nil {
+	info := s.attacks.Load(attackID)
+	if info == nil {
 		writeJSON(w, http.StatusOK, AttackStatus{Active: false})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, AttackStatus{
-		Active:   true,
-		AttackID: orch.ID(),
-		Target:   orch.Target(),
-		Uptime:   orch.UptimeMs(),
+	uptime := int64(0)
+	if info.Orchestrator != nil {
+		uptime = info.Orchestrator.UptimeMs()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"active":         info.Status == "active",
+		"attack_id":      info.ID,
+		"target":         info.URL,
+		"uptime_ms":      uptime,
+		"status":         info.Status,
+		"created_at":     info.CreatedAt,
+		"total_redeploys": info.TotalRedeploys,
+		"last_responses": info.LastResponses,
 	})
 }
 
+// ==================== LIST ====================
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
+		return
+	}
+
+	attacks := s.attacks.List()
+	attackList := make([]map[string]interface{}, 0, len(attacks))
+	for _, info := range attacks {
+		// Extract end part of URL for display
+		displayURL := info.URL
+		if idx := strings.LastIndex(info.URL, "/"); idx > 10 {
+			displayURL = "..." + info.URL[idx:]
+		}
+
+		attackList = append(attackList, map[string]interface{}{
+			"id":            info.ID,
+			"url":           info.URL,
+			"display_url":   displayURL,
+			"status":        info.Status,
+			"created_at":    info.CreatedAt,
+			"total_redeploys": info.TotalRedeploys,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"attacks": attackList,
+		"total":   len(attackList),
+	})
+}
+
+// ==================== DELETE ====================
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
+		return
+	}
+
+	var req struct {
+		AttackID string `json:"attack_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid JSON body", "success": false})
+		return
+	}
+
+	if req.AttackID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "attack_id is required", "success": false})
+		return
+	}
+
+	info := s.attacks.Load(req.AttackID)
+	if info != nil && info.Orchestrator != nil {
+		info.Orchestrator.Stop()
+	}
+
+	s.attacks.Delete(req.AttackID)
+	log.Printf("[api] Attack deleted: %s", req.AttackID)
+	writeJSON(w, http.StatusOK, AttackResponse{AttackID: req.AttackID, Success: true})
+}
+
+// ==================== REDEPLOY ====================
+func (s *Server) handleRedeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"error": "method not allowed", "success": false})
+		return
+	}
+
+	var req struct {
+		AttackID string `json:"attack_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid JSON body", "success": false})
+		return
+	}
+
+	if req.AttackID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "attack_id is required", "success": false})
+		return
+	}
+
+	info := s.attacks.Load(req.AttackID)
+	if info == nil {
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "attack not found", "success": false})
+		return
+	}
+
+	// Stop current attack
+	if info.Orchestrator != nil {
+		info.Orchestrator.Stop()
+		info.Orchestrator = nil
+		time.Sleep(2 * time.Second)
+	}
+
+	info.Status = "deploying"
+	info.TotalRedeploys++
+	s.attacks.Store(req.AttackID, info)
+
+	log.Printf("[api] Redeploy requested for attack: %s (redeploy #%d)", req.AttackID, info.TotalRedeploys)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":        true,
+		"attack_id":      req.AttackID,
+		"redeploy_count": info.TotalRedeploys,
+	})
+}
+
+// ==================== WEBSOCKET ====================
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	attackID := r.URL.Query().Get("attack_id")
 	if attackID == "" {
@@ -182,9 +388,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orch := s.attacks.Get(attackID)
-	if orch == nil {
-		http.Error(w, "attack not found or already finished", http.StatusNotFound)
+	info := s.attacks.Load(attackID)
+	if info == nil || info.Orchestrator == nil {
+		http.Error(w, "attack not found or not running", http.StatusNotFound)
 		return
 	}
 
@@ -194,7 +400,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := NewClient(s.hub, conn, orch)
+	client := NewClient(s.hub, conn, info.Orchestrator)
 	s.hub.Register(client)
 	go client.WritePump()
 	go client.ReadPump()
@@ -202,17 +408,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[ws] Client connected for attack %s", attackID)
 }
 
+// ==================== MIDDLEWARE ====================
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
@@ -223,37 +428,50 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
+// ==================== ATTACK REGISTRY ====================
 type AttackRegistry struct {
-	attacks map[string]*Orchestrator
+	attacks map[string]*AttackInfo
 	mu      sync.RWMutex
 }
 
 func NewAttackRegistry() *AttackRegistry {
-	return &AttackRegistry{attacks: make(map[string]*Orchestrator)}
+	return &AttackRegistry{attacks: make(map[string]*AttackInfo)}
 }
 
-func (ar *AttackRegistry) Add(o *Orchestrator) {
+func (ar *AttackRegistry) Store(id string, info *AttackInfo) {
 	ar.mu.Lock()
-	ar.attacks[o.ID()] = o
+	ar.attacks[id] = info
 	ar.mu.Unlock()
 }
 
-func (ar *AttackRegistry) Remove(id string) {
-	ar.mu.Lock()
-	delete(ar.attacks, id)
-	ar.mu.Unlock()
-}
-
-func (ar *AttackRegistry) Get(id string) *Orchestrator {
+func (ar *AttackRegistry) Load(id string) *AttackInfo {
 	ar.mu.RLock()
 	defer ar.mu.RUnlock()
 	return ar.attacks[id]
 }
 
+func (ar *AttackRegistry) Delete(id string) {
+	ar.mu.Lock()
+	delete(ar.attacks, id)
+	ar.mu.Unlock()
+}
+
+func (ar *AttackRegistry) List() []*AttackInfo {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	list := make([]*AttackInfo, 0, len(ar.attacks))
+	for _, v := range ar.attacks {
+		list = append(list, v)
+	}
+	return list
+}
+
 func (ar *AttackRegistry) StopAll() {
 	ar.mu.RLock()
 	defer ar.mu.RUnlock()
-	for _, o := range ar.attacks {
-		o.Stop()
+	for _, info := range ar.attacks {
+		if info.Orchestrator != nil {
+			info.Orchestrator.Stop()
+		}
 	}
 }
