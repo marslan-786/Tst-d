@@ -13,14 +13,15 @@ import (
 )
 
 type Orchestrator struct {
-	id       string
-	target   *url.URL
-	layers   LayerWorkers
-	duration time.Duration
-	proxyMgr *ProxyManager
-	hub      *WebSocketHub
-	cfg      *Config
-	useProxy bool
+	id         string
+	target     *url.URL
+	layers     LayerWorkers
+	duration   time.Duration
+	proxyMgr   *ProxyManager
+	hub        *WebSocketHub
+	cfg        *Config
+	useProxy   bool
+	smartPaths *SmartPaths
 
 	stats  *Stats
 	ctx    context.Context
@@ -39,6 +40,7 @@ func NewOrchestrator(
 	hub *WebSocketHub,
 	cfg *Config,
 	useProxy bool,
+	smartPaths *SmartPaths,
 ) *Orchestrator {
 	ctx, cancel := context.WithCancel(context.Background())
 	id := generateID()
@@ -50,18 +52,24 @@ func NewOrchestrator(
 		proxyMgr.enabled = true
 	}
 
+	// Fallback smart paths if nil
+	if smartPaths == nil {
+		smartPaths = DetectSmartPaths(target.String())
+	}
+
 	return &Orchestrator{
-		id:       id,
-		target:   target,
-		layers:   layers,
-		duration: duration,
-		proxyMgr: proxyMgr,
-		hub:      hub,
-		cfg:      cfg,
-		useProxy: useProxy,
-		stats:    NewStats(),
-		ctx:      ctx,
-		cancel:   cancel,
+		id:         id,
+		target:     target,
+		layers:     layers,
+		duration:   duration,
+		proxyMgr:   proxyMgr,
+		hub:        hub,
+		cfg:        cfg,
+		useProxy:   useProxy,
+		smartPaths: smartPaths,
+		stats:      NewStats(),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -102,11 +110,11 @@ func (o *Orchestrator) Start() {
 	o.wg.Add(1)
 	go o.launchLayer("L1 - Chunked Abuse", o.layers.L1, layer1Chunked, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L2 - Session Exhaust", o.layers.L2, layer2Recursive, timer)
+	go o.launchLayer("L2 - Captcha Flood", o.layers.L2, layer2Recursive, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L3 - Fake Login POST", o.layers.L3, layer3CacheBypass, timer)
 	o.wg.Add(1)
-	go o.launchLayer("L4 - Slow TCP Exhaust", o.layers.L4, layer4PoolExhaust, timer)
+	go o.launchLayer("L4 - TCP Pool Exhaust", o.layers.L4, layer4PoolExhaust, timer)
 	o.wg.Add(1)
 	go o.launchLayer("L5 - Parser Stress", o.layers.L5, layer5ParserStress, timer)
 
